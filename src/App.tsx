@@ -7,6 +7,7 @@ import { FPSController } from './game/engine/FPSController';
 import { PhysicsAndDestructionManager } from './game/engine/PhysicsAndDestruction';
 import { EnemyAIManager } from './game/engine/AIEnemies';
 import { soundEngine, AcousticState } from './game/audio/SoundEngine';
+import { CAMO_VARIANTS } from './game/data/gunsmithData';
 
 // UI Modals & Overlays
 import { TitleScreen } from './game/components/TitleScreen';
@@ -24,9 +25,19 @@ import { SocialHubModal } from './game/components/SocialHubModal';
 export default function App() {
   const mountRef = useRef<HTMLDivElement>(null);
 
-  // High-level Game States
-  const [gameState, setGameState] = useState<GameStateStatus>('menu');
-  const [gameMode, setGameMode] = useState<GameMode>('title');
+  // High-level Game States (supports ?autostart=1 to jump directly into active combat)
+  const [gameState, setGameState] = useState<GameStateStatus>(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autostart') === '1') {
+      return 'playing';
+    }
+    return 'menu';
+  });
+  const [gameMode, setGameMode] = useState<GameMode>(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('autostart') === '1') {
+      return 'campaign';
+    }
+    return 'title';
+  });
   const [currentMissionIndex, setCurrentMissionIndex] = useState<number>(0);
   const [currentMission, setCurrentMission] = useState<CampaignMission>(CAMPAIGN_MISSIONS[0]);
 
@@ -47,6 +58,7 @@ export default function App() {
     currentMag: 30,
     reserveAmmo: 180,
     grenades: 2,
+    flashbangs: 3,
     score: 0,
     kills: 0,
     headshots: 0,
@@ -99,6 +111,11 @@ export default function App() {
   const lastAcousticUpdate = useRef<number>(0);
   const briefingFocusRef = useRef<{ x: number; y: number; z: number } | null>(null);
   const currentLookAtRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 2.5, -12));
+
+  // Tactical Flashbang Screen-Whiteout & Blinded Enemies State
+  const [flashbangWhiteout, setFlashbangWhiteout] = useState<number>(0);
+  const flashbangWhiteoutRef = useRef<number>(0);
+  const [blindedEnemiesCount, setBlindedEnemiesCount] = useState<number>(0);
 
   // Internal 3D Engine references
   const engineRef = useRef<{
@@ -581,9 +598,17 @@ export default function App() {
             return prev;
           });
 
-          // Update active live enemy count
+          // Update active live & blinded enemy counts
           const liveCount = em.enemies.filter((e) => e.state !== 'dead').length;
           setEnemyCount(liveCount);
+          const blindedCount = em.enemies.filter((e) => e.state === 'blinded').length;
+          setBlindedEnemiesCount(blindedCount);
+
+          // Smoothly decay player Flashbang Screen-Whiteout effect
+          if (flashbangWhiteoutRef.current > 0) {
+            flashbangWhiteoutRef.current = Math.max(0, flashbangWhiteoutRef.current - delta * 0.42);
+            setFlashbangWhiteout(flashbangWhiteoutRef.current);
+          }
         } else if (gameState === 'death_cam') {
           // Death camera system: slowly pans from location of death to the enemy who delivered final shot
           ctrl.weaponRigGroup.visible = false;
@@ -657,7 +682,94 @@ export default function App() {
     };
   }, [gameState, populateBattlefield, handleBulletFired]);
 
-  // Esc key pause handling
+  // Throw M84 Tactical Flashbang (Blinds nearby AI enemies & triggers player screen-whiteout if within blast radius)
+  const handleThrowFlashbang = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const { fpsController: ctrl, physicsManager: pm, enemyManager: em, camera } = engine;
+
+    if (ctrl.stats.flashbangs <= 0) {
+      soundEngine.playDryFire();
+      return;
+    }
+
+    ctrl.stats.flashbangs--;
+    setPlayerStats({ ...ctrl.stats });
+
+    const throwDir = camera.getWorldDirection(new THREE.Vector3());
+
+    pm.throwFlashbang(ctrl.position, throwDir, (blastCenter, blastRadius) => {
+      // 1. Blind all live AI enemies within blast radius
+      const stunnedCount = em.applyFlashbangBlindness(blastCenter, blastRadius);
+      if (stunnedCount > 0) {
+        triggerHitmarker(false, false);
+      }
+
+      // 2. Calculate player screen-whiteout & tinnitus if within blast radius (16m)
+      const playerDist = ctrl.position.distanceTo(blastCenter);
+      let whiteoutStrength = 0;
+
+      if (playerDist <= blastRadius) {
+        const distFactor = Math.max(0, 1.0 - playerDist / blastRadius);
+        const camDir = camera.getWorldDirection(new THREE.Vector3());
+        const toBlast = blastCenter.clone().sub(ctrl.position).normalize();
+        const lookDot = camDir.dot(toBlast); // 1.0 looking directly at flash, -1.0 looking away
+        const angleMultiplier = lookDot >= 0 ? 0.75 + 0.25 * lookDot : 0.45;
+        const occlusion = soundEngine.calculateOcclusion(blastCenter, ctrl.position);
+        const occlusionAtten = 1.0 - occlusion * 0.65;
+
+        whiteoutStrength = Math.min(1.0, Math.max(0.18, distFactor * angleMultiplier * occlusionAtten * 1.35));
+        flashbangWhiteoutRef.current = Math.min(1.0, Math.max(flashbangWhiteoutRef.current, whiteoutStrength));
+        setFlashbangWhiteout(flashbangWhiteoutRef.current);
+      }
+
+      // 3. Play spatialized flashbang concussion + tinnitus ear ringing
+      soundEngine.playFlashbangDetonation(blastCenter, whiteoutStrength);
+    });
+  }, [triggerHitmarker]);
+
+  // Throw M67 Fragmentation Grenade
+  const handleThrowFrag = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const { fpsController: ctrl, physicsManager: pm, enemyManager: em, camera } = engine;
+
+    if (ctrl.stats.grenades <= 0) {
+      soundEngine.playDryFire();
+      return;
+    }
+
+    ctrl.stats.grenades--;
+    setPlayerStats({ ...ctrl.stats });
+
+    const throwDir = camera.getWorldDirection(new THREE.Vector3());
+
+    pm.throwFragGrenade(ctrl.position, throwDir, (blastCenter, blastRadius, maxDamage) => {
+      em.enemies.forEach((e) => {
+        if (e.state !== 'dead') {
+          const d = e.mesh.position.distanceTo(blastCenter);
+          if (d < blastRadius) {
+            const dmg = maxDamage * (1 - d / blastRadius);
+            const { isKill } = em.damageEnemy(e, dmg, false);
+            if (isKill) {
+              triggerHitmarker(false, true);
+              ctrl.stats.kills++;
+              setPlayerStats({ ...ctrl.stats });
+            }
+          }
+        }
+      });
+
+      const playerDist = ctrl.position.distanceTo(blastCenter);
+      if (playerDist < blastRadius) {
+        const pDmg = maxDamage * (1 - playerDist / blastRadius) * 0.65;
+        ctrl.takeDamage(pDmg);
+        setLastDamagedTime(performance.now());
+      }
+    });
+  }, [triggerHitmarker]);
+
+  // Esc key pause & tactical hotkeys handling
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Escape') {
@@ -695,6 +807,32 @@ export default function App() {
         }
       }
 
+      // F key shortcut to throw M84 Tactical Flashbang
+      if (e.code === 'KeyF' && gameState === 'playing') {
+        handleThrowFlashbang();
+      }
+
+      // G key shortcut to throw M67 Frag Grenade
+      if (e.code === 'KeyG' && gameState === 'playing') {
+        handleThrowFrag();
+      }
+
+      // N key shortcut in-game to cycle weapon skin finish & inspect detail
+      if (e.code === 'KeyN' && gameState === 'playing') {
+        const curIdx = CAMO_VARIANTS.findIndex((c) => c.id === selectedCamoId);
+        const nextCamo = CAMO_VARIANTS[(curIdx + 1) % CAMO_VARIANTS.length];
+        if (nextCamo) {
+          setSelectedCamoId(nextCamo.id);
+          const ctrl = engineRef.current?.fpsController;
+          if (ctrl) {
+            ctrl.setWeaponCamo(0, nextCamo.id);
+            ctrl.setWeaponCamo(1, nextCamo.id);
+            ctrl.startInspect();
+            setPlayerStats({ ...ctrl.stats });
+          }
+        }
+      }
+
       // V key shortcut to cycle dynamic skybox atmosphere preset
       if (e.code === 'KeyV' && (gameState === 'playing' || gameState === 'menu' || gameState === 'briefing' || gameState === 'paused')) {
         const engine = engineRef.current;
@@ -708,7 +846,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [gameState, activeModal, currentMission]);
+  }, [gameState, activeModal, currentMission, selectedCamoId, handleThrowFlashbang, handleThrowFrag]);
 
   // Open Tactical Holographic Briefing Screen before level starts
   const handleStartCampaign = () => {
@@ -755,6 +893,10 @@ export default function App() {
       engine.fpsController.velocity.set(0, 0, 0);
       engine.fpsController.stats.health = 100;
       engine.fpsController.stats.armor = 100;
+      engine.fpsController.stats.grenades = 2;
+      engine.fpsController.stats.flashbangs = 3;
+      flashbangWhiteoutRef.current = 0;
+      setFlashbangWhiteout(0);
       engine.fpsController.weaponRigGroup.visible = true;
       populateBattlefield(currentMission);
       engine.fpsController.requestPointerLock();
@@ -777,6 +919,10 @@ export default function App() {
       engine.fpsController.velocity.set(0, 0, 0);
       engine.fpsController.stats.health = 100;
       engine.fpsController.stats.armor = 100;
+      engine.fpsController.stats.grenades = 2;
+      engine.fpsController.stats.flashbangs = 3;
+      flashbangWhiteoutRef.current = 0;
+      setFlashbangWhiteout(0);
       engine.fpsController.weaponRigGroup.visible = true;
       populateBattlefield(currentMission);
       const mpPreset: SkyboxEnvironmentPreset = modeId.includes('night') ? 'moonlit_night' : 'arctic_dawn';
@@ -822,17 +968,40 @@ export default function App() {
       engine.fpsController.velocity.set(0, 0, 0);
       engine.fpsController.stats.health = 100;
       engine.fpsController.stats.armor = 100;
+      engine.fpsController.stats.grenades = 2;
+      engine.fpsController.stats.flashbangs = 3;
+      flashbangWhiteoutRef.current = 0;
+      setFlashbangWhiteout(0);
       engine.fpsController.weaponRigGroup.visible = true;
       populateBattlefield(currentMission);
       engine.fpsController.requestPointerLock();
     }
   };
 
-  // Apply Gunsmith Camo
+  // Trigger or toggle in-game Weapon Skin Inspection ('I' key or HUD button)
+  const handleInspectWeapon = () => {
+    const ctrl = engineRef.current?.fpsController;
+    if (!ctrl) return;
+    if (ctrl.isInspecting) {
+      ctrl.cancelInspect();
+    } else {
+      ctrl.startInspect();
+    }
+    setPlayerStats({ ...ctrl.stats });
+  };
+
+  // Apply Gunsmith Camo (and trigger inspect preview if in active gameplay)
   const handleSelectCamo = (camoId: string) => {
     setSelectedCamoId(camoId);
-    engineRef.current?.fpsController.setWeaponCamo(0, camoId);
-    engineRef.current?.fpsController.setWeaponCamo(1, camoId);
+    const ctrl = engineRef.current?.fpsController;
+    if (ctrl) {
+      ctrl.setWeaponCamo(0, camoId);
+      ctrl.setWeaponCamo(1, camoId);
+      if (gameState === 'playing') {
+        ctrl.startInspect();
+        setPlayerStats({ ...ctrl.stats });
+      }
+    }
   };
 
   // Toggle Audio Mute
@@ -907,11 +1076,18 @@ export default function App() {
           lastDamagedTime={lastDamagedTime}
           cameraYaw={cameraYaw}
           activeWeaponName={activeWeaponName}
+          activeCamoId={selectedCamoId}
           isPointerLocked={isPointerLocked}
           onRequestPointerLock={() => engineRef.current?.fpsController.requestPointerLock()}
           enemyCount={enemyCount}
           skyboxLabel={currentSkyboxLabel}
           acousticState={acousticState}
+          flashbangWhiteout={flashbangWhiteout}
+          blindedEnemiesCount={blindedEnemiesCount}
+          onThrowFlashbang={handleThrowFlashbang}
+          onThrowFrag={handleThrowFrag}
+          onInspectWeapon={handleInspectWeapon}
+          onSelectCamo={handleSelectCamo}
         />
       )}
 

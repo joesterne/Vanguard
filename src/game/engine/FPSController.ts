@@ -2,6 +2,11 @@ import * as THREE from 'three';
 import { WeaponDef, PlayerStats } from '../types';
 import { WeaponRig, buildMK18WeaponMesh, buildPistolWeaponMesh, INITIAL_WEAPONS } from './Weapons';
 import { soundEngine } from '../audio/SoundEngine';
+import {
+  canTriggerInspect,
+  computeInspectKinematics,
+  DEFAULT_INSPECT_DURATION,
+} from './inspectKinematics';
 
 export class FPSController {
   public camera: THREE.PerspectiveCamera;
@@ -43,7 +48,8 @@ export class FPSController {
   // Inspect Weapon Animation
   public isInspecting: boolean = false;
   private inspectTime: number = 0;
-  private inspectDuration: number = 3.6;
+  private inspectStartTime: number = 0;
+  private inspectDuration: number = DEFAULT_INSPECT_DURATION;
   private inspectOffset = new THREE.Vector3();
   private inspectRot = new THREE.Vector3();
 
@@ -71,6 +77,7 @@ export class FPSController {
       currentMag: INITIAL_WEAPONS[0].magazineSize,
       reserveAmmo: INITIAL_WEAPONS[0].reserveAmmo,
       grenades: 2,
+      flashbangs: 3,
       score: 0,
       kills: 0,
       headshots: 0,
@@ -82,6 +89,8 @@ export class FPSController {
       isSprinting: false,
       isCrouching: false,
       isInspecting: false,
+      inspectProgress: 0,
+      inspectPhaseLabel: 'LEFT RECEIVER · SERIAL UID & SKIN FINISH',
     };
 
     // Attach weapon rig group directly as child of camera
@@ -97,10 +106,13 @@ export class FPSController {
   }
 
   public startInspect() {
-    if (this.stats.isReloading || this.stats.isAiming || this.stats.isSprinting) return;
+    if (!canTriggerInspect(this.stats)) return;
     this.isInspecting = true;
     this.stats.isInspecting = true;
     this.inspectTime = 0;
+    this.inspectStartTime = performance.now();
+    this.stats.inspectProgress = 0;
+    this.stats.inspectPhaseLabel = 'LEFT RECEIVER · SERIAL UID & SKIN FINISH';
     soundEngine.playInspectWeapon();
   }
 
@@ -109,6 +121,10 @@ export class FPSController {
       this.isInspecting = false;
       this.stats.isInspecting = false;
       this.inspectTime = 0;
+      this.stats.inspectProgress = 0;
+      if (this.currentRig.inspectLight) {
+        this.currentRig.inspectLight.intensity = 0;
+      }
     }
   }
 
@@ -252,6 +268,16 @@ export class FPSController {
           this.currentRig = buildPistolWeaponMesh(camoId);
         }
         this.weaponRigGroup.add(this.currentRig.group);
+        this.currentRig.group.position.set(
+          this.currentWeaponOffset.x + this.inspectOffset.x,
+          this.currentWeaponOffset.y + this.inspectOffset.y,
+          this.currentWeaponOffset.z + this.inspectOffset.z
+        );
+        this.currentRig.group.rotation.set(
+          this.inspectRot.x,
+          this.inspectRot.y,
+          this.inspectRot.z
+        );
       }
     }
   }
@@ -477,48 +503,24 @@ export class FPSController {
     this.weaponRecoilRot.y = THREE.MathUtils.damp(this.weaponRecoilRot.y, 0, 16, delta);
     this.weaponRecoilRot.z = THREE.MathUtils.damp(this.weaponRecoilRot.z, 0, 16, delta);
 
-    // Inspect weapon animation kinematics
-    if (this.isInspecting) {
-      this.inspectTime += delta;
-      const t = this.inspectTime;
+    // Inspect weapon animation kinematics driven by isInspecting player state
+    if (this.isInspecting || this.stats.isInspecting) {
+      this.isInspecting = true;
+      this.stats.isInspecting = true;
+      const wallElapsed = (performance.now() - this.inspectStartTime) / 1000;
+      this.inspectTime = Math.max(this.inspectTime + delta, wallElapsed);
 
-      if (t < 1.3) {
-        // Phase 1: Lift towards chest, roll counter-clockwise to inspect receiver markings & optics
-        const p1 = t / 1.3;
-        const ease1 = Math.sin((p1 * Math.PI) / 2);
-        const targetPos = new THREE.Vector3(-0.07, 0.08, 0.12);
-        const targetRot = new THREE.Vector3(0.25, -0.35, 0.65);
-
-        this.inspectOffset.lerp(targetPos, ease1);
-        this.inspectRot.x = THREE.MathUtils.lerp(this.inspectRot.x, targetRot.x, ease1);
-        this.inspectRot.y = THREE.MathUtils.lerp(this.inspectRot.y, targetRot.y, ease1);
-        this.inspectRot.z = THREE.MathUtils.lerp(this.inspectRot.z, targetRot.z, ease1);
-      } else if (t < 2.5) {
-        // Phase 2: Roll over to inspect right flank, bolt carrier & camo finish
-        const p2 = (t - 1.3) / 1.2;
-        const ease2 = 0.5 - 0.5 * Math.cos(p2 * Math.PI);
-        const phase1Pos = new THREE.Vector3(-0.07, 0.08, 0.12);
-        const phase2Pos = new THREE.Vector3(-0.02, 0.06, 0.14);
-        const phase1Rot = new THREE.Vector3(0.25, -0.35, 0.65);
-        const phase2Rot = new THREE.Vector3(-0.18, 0.42, -0.58);
-
-        this.inspectOffset.lerpVectors(phase1Pos, phase2Pos, ease2);
-        this.inspectRot.x = THREE.MathUtils.lerp(phase1Rot.x, phase2Rot.x, ease2);
-        this.inspectRot.y = THREE.MathUtils.lerp(phase1Rot.y, phase2Rot.y, ease2);
-        this.inspectRot.z = THREE.MathUtils.lerp(phase1Rot.z, phase2Rot.z, ease2);
-      } else if (t < this.inspectDuration) {
-        // Phase 3: Smooth return to hip fire stance
-        const p3 = (t - 2.5) / (this.inspectDuration - 2.5);
-        const ease3 = Math.sin((p3 * Math.PI) / 2);
-        const phase2Pos = new THREE.Vector3(-0.02, 0.06, 0.14);
-        const phase2Rot = new THREE.Vector3(-0.18, 0.42, -0.58);
-
-        this.inspectOffset.lerpVectors(phase2Pos, new THREE.Vector3(0, 0, 0), ease3);
-        this.inspectRot.x = THREE.MathUtils.lerp(phase2Rot.x, 0, ease3);
-        this.inspectRot.y = THREE.MathUtils.lerp(phase2Rot.y, 0, ease3);
-        this.inspectRot.z = THREE.MathUtils.lerp(phase2Rot.z, 0, ease3);
-      } else {
+      const kin = computeInspectKinematics(this.inspectTime, this.inspectDuration);
+      if (kin.isComplete) {
         this.cancelInspect();
+      } else {
+        this.inspectOffset.set(kin.offset.x, kin.offset.y, kin.offset.z);
+        this.inspectRot.set(kin.rotation.x, kin.rotation.y, kin.rotation.z);
+        this.stats.inspectProgress = kin.progress;
+        this.stats.inspectPhaseLabel = kin.phaseLabel;
+        if (this.currentRig.inspectLight) {
+          this.currentRig.inspectLight.intensity = kin.lightIntensity;
+        }
       }
     } else {
       // Exponential damp back to zero
@@ -529,6 +531,15 @@ export class FPSController {
       this.inspectRot.x = THREE.MathUtils.damp(this.inspectRot.x, 0, 14, delta);
       this.inspectRot.y = THREE.MathUtils.damp(this.inspectRot.y, 0, 14, delta);
       this.inspectRot.z = THREE.MathUtils.damp(this.inspectRot.z, 0, 14, delta);
+
+      if (this.currentRig.inspectLight && this.currentRig.inspectLight.intensity > 0.01) {
+        this.currentRig.inspectLight.intensity = THREE.MathUtils.damp(
+          this.currentRig.inspectLight.intensity,
+          0,
+          12,
+          delta
+        );
+      }
     }
 
     // Walk bobbing offset (muted when aiming or inspecting)

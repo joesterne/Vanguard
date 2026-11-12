@@ -42,6 +42,7 @@ export interface PlayerStats {
   currentMag: number;
   reserveAmmo: number;
   grenades: number;
+  flashbangs: number;
   score: number;
   kills: number;
   headshots: number;
@@ -53,6 +54,8 @@ export interface PlayerStats {
   isSprinting: boolean;
   isCrouching: boolean;
   isInspecting: boolean;
+  inspectProgress?: number;
+  inspectPhaseLabel?: string;
 }
 
 export interface DestructibleObject {
@@ -76,11 +79,13 @@ export interface EnemyActor {
   position: { x: number; y: number; z: number };
   velocity: { x: number; y: number; z: number };
   rotationY: number;
-  state: 'patrol' | 'alert' | 'aim' | 'attack' | 'dead';
+  state: 'patrol' | 'alert' | 'aim' | 'attack' | 'blinded' | 'dead';
   patrolTarget: { x: number; z: number };
   shootCooldown: number;
   aimTime: number;
   isAlerted: boolean;
+  blindedTimer?: number;
+  stunHalo?: THREE.Group;
   telegraphGlow?: THREE.PointLight | THREE.Mesh;
 }
 

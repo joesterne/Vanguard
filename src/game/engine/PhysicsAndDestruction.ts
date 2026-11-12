@@ -27,12 +27,24 @@ export interface ParticleEffect {
   maxLife: number;
 }
 
+export interface ActiveThrowable {
+  type: 'flashbang' | 'frag';
+  mesh: THREE.Group;
+  velocity: THREE.Vector3;
+  rotVelocity: THREE.Vector3;
+  fuseTimer: number;
+  hasBounced: boolean;
+  onFlashbangDetonate?: (center: THREE.Vector3, blastRadius: number) => void;
+  onFragDetonate?: (center: THREE.Vector3, blastRadius: number, maxDamage: number) => void;
+}
+
 export class PhysicsAndDestructionManager {
   private scene: THREE.Scene;
   public destructibles: DestructibleObject[] = [];
   public activeDebris: DebrisChunk[] = [];
   public activeCasings: EjectedCasing[] = [];
   public activeParticles: ParticleEffect[] = [];
+  public activeThrowables: ActiveThrowable[] = [];
 
   // Shared reusable geometries & materials
   private concreteGeo = new THREE.BoxGeometry(0.25, 0.2, 0.3);
@@ -517,10 +529,336 @@ export class PhysicsAndDestructionManager {
   }
 
   /**
+   * Builds a composite multi-part 3D M84 Stun Grenade (Tactical Flashbang) canister
+   */
+  private buildM84FlashbangMesh(): THREE.Group {
+    const group = new THREE.Group();
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0x3b4438,
+      metalness: 0.55,
+      roughness: 0.42,
+    });
+    const coreMat = new THREE.MeshStandardMaterial({
+      color: 0xd8dee9,
+      metalness: 0.88,
+      roughness: 0.2,
+      emissive: 0x38bdf8,
+      emissiveIntensity: 0.35,
+    });
+    const brassMat = new THREE.MeshStandardMaterial({
+      color: 0xc5a059,
+      metalness: 0.85,
+      roughness: 0.25,
+    });
+
+    // 1. Inner magnesium flash core cylinder
+    const innerGeo = new THREE.CylinderGeometry(0.036, 0.036, 0.13, 16);
+    const innerMesh = new THREE.Mesh(innerGeo, coreMat);
+    group.add(innerMesh);
+
+    // 2. Outer perforated steel sleeve (top, middle, bottom bands)
+    const bandPositions = [-0.048, 0, 0.048];
+    bandPositions.forEach((yPos) => {
+      const bandGeo = new THREE.CylinderGeometry(0.042, 0.042, 0.024, 16);
+      const band = new THREE.Mesh(bandGeo, bodyMat);
+      band.position.y = yPos;
+      band.castShadow = true;
+      group.add(band);
+    });
+
+    // 3. Top & Bottom hexagonal end caps
+    const capGeo = new THREE.CylinderGeometry(0.044, 0.044, 0.018, 6);
+    const topCap = new THREE.Mesh(capGeo, bodyMat);
+    topCap.position.y = 0.068;
+    group.add(topCap);
+
+    const botCap = new THREE.Mesh(capGeo, bodyMat);
+    botCap.position.y = -0.068;
+    group.add(botCap);
+
+    // 4. M201A1 Fuse head & striker assembly
+    const fuseGeo = new THREE.CylinderGeometry(0.022, 0.028, 0.035, 12);
+    const fuseMesh = new THREE.Mesh(fuseGeo, brassMat);
+    fuseMesh.position.y = 0.092;
+    group.add(fuseMesh);
+
+    // 5. Curved safety spoon lever
+    const spoonGeo = new THREE.BoxGeometry(0.012, 0.11, 0.022);
+    const spoonMesh = new THREE.Mesh(spoonGeo, brassMat);
+    spoonMesh.position.set(0.038, 0.025, 0);
+    spoonMesh.rotation.z = -0.12;
+    group.add(spoonMesh);
+
+    return group;
+  }
+
+  /**
+   * Builds a composite M67 Fragmentation Grenade mesh
+   */
+  private buildM67FragGrenadeMesh(): THREE.Group {
+    const group = new THREE.Group();
+    const oliveMat = new THREE.MeshStandardMaterial({
+      color: 0x354230,
+      metalness: 0.4,
+      roughness: 0.55,
+    });
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: 0x88929b,
+      metalness: 0.85,
+      roughness: 0.25,
+    });
+
+    const sphereGeo = new THREE.SphereGeometry(0.052, 16, 16);
+    const sphere = new THREE.Mesh(sphereGeo, oliveMat);
+    sphere.castShadow = true;
+    group.add(sphere);
+
+    const collarGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.03, 12);
+    const collar = new THREE.Mesh(collarGeo, steelMat);
+    collar.position.y = 0.058;
+    group.add(collar);
+
+    return group;
+  }
+
+  /**
+   * Throws a Tactical Flashbang (M84 Stun Grenade) along a ballistic trajectory.
+   * Upon detonation (1.25s fuse), emits a blinding magnesium flash, shockwave ring,
+   * and triggers callback to blind nearby AI enemies and whiteout the player if within blast radius.
+   */
+  public throwFlashbang(
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    onDetonate: (blastCenter: THREE.Vector3, blastRadius: number) => void
+  ) {
+    soundEngine.playPinPull();
+
+    const mesh = this.buildM84FlashbangMesh();
+    const spawnPos = origin
+      .clone()
+      .addScaledVector(direction, 0.65)
+      .add(new THREE.Vector3(0, -0.1, 0));
+    mesh.position.copy(spawnPos);
+    this.scene.add(mesh);
+
+    const throwVel = direction
+      .clone()
+      .normalize()
+      .multiplyScalar(12.5)
+      .add(new THREE.Vector3(0, 3.4, 0));
+
+    this.activeThrowables.push({
+      type: 'flashbang',
+      mesh,
+      velocity: throwVel,
+      rotVelocity: new THREE.Vector3(14, 9, 11),
+      fuseTimer: 1.15,
+      hasBounced: false,
+      onFlashbangDetonate: onDetonate,
+    });
+  }
+
+  /**
+   * Throws an M67 Fragmentation Grenade along a ballistic trajectory.
+   */
+  public throwFragGrenade(
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    onDetonate: (blastCenter: THREE.Vector3, blastRadius: number, maxDamage: number) => void
+  ) {
+    soundEngine.playPinPull();
+
+    const mesh = this.buildM67FragGrenadeMesh();
+    const spawnPos = origin
+      .clone()
+      .addScaledVector(direction, 0.65)
+      .add(new THREE.Vector3(0, -0.1, 0));
+    mesh.position.copy(spawnPos);
+    this.scene.add(mesh);
+
+    const throwVel = direction
+      .clone()
+      .normalize()
+      .multiplyScalar(14.0)
+      .add(new THREE.Vector3(0, 4.0, 0));
+
+    this.activeThrowables.push({
+      type: 'frag',
+      mesh,
+      velocity: throwVel,
+      rotVelocity: new THREE.Vector3(10, 12, 8),
+      fuseTimer: 1.5,
+      hasBounced: false,
+      onFragDetonate: onDetonate,
+    });
+  }
+
+  /**
+   * Detonates a Tactical Flashbang at the specified 3D world position.
+   * Spawns a 1.7-million-candela blinding white-cyan flash sphere, concussion ring,
+   * magnesium sparks, and invokes the blinding & screen-whiteout callback.
+   */
+  public detonateFlashbang(
+    pos: THREE.Vector3,
+    onDetonate?: (blastCenter: THREE.Vector3, blastRadius: number) => void
+  ) {
+    const FLASHBANG_RADIUS = 18.0;
+
+    // 1. Expanding blinding white-cyan magnesium flash core
+    const flashGeo = new THREE.SphereGeometry(0.75, 16, 16);
+    const flashMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1.0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const flashMesh = new THREE.Mesh(flashGeo, flashMat);
+    flashMesh.position.copy(pos);
+    flashMesh.position.y += 0.35;
+    this.scene.add(flashMesh);
+
+    this.activeParticles.push({
+      mesh: flashMesh,
+      velocity: new THREE.Vector3(0, 0.5, 0),
+      scaleGrowth: 11.5,
+      alphaDecay: 2.8,
+      life: 0.42,
+      maxLife: 0.42,
+    });
+
+    // 2. Supersonic horizontal concussion shockwave ring
+    const ringGeo = new THREE.TorusGeometry(0.6, 0.06, 8, 32);
+    ringGeo.rotateX(Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x7dd3fc,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+    ringMesh.position.copy(pos);
+    ringMesh.position.y = Math.max(0.25, pos.y);
+    this.scene.add(ringMesh);
+
+    this.activeParticles.push({
+      mesh: ringMesh,
+      velocity: new THREE.Vector3(0, 0.1, 0),
+      scaleGrowth: 16.0,
+      alphaDecay: 2.4,
+      life: 0.45,
+      maxLife: 0.45,
+    });
+
+    // 3. Magnesium white smoke & spark burst
+    for (let i = 0; i < 10; i++) {
+      const sparkGeo = new THREE.SphereGeometry(0.18 + Math.random() * 0.2, 6, 6);
+      const sparkMat = new THREE.MeshBasicMaterial({
+        color: i % 2 === 0 ? 0xffffff : 0xbae6fd,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const pMesh = new THREE.Mesh(sparkGeo, sparkMat);
+      pMesh.position.set(
+        pos.x + (Math.random() - 0.5) * 0.6,
+        pos.y + 0.3 + Math.random() * 0.5,
+        pos.z + (Math.random() - 0.5) * 0.6
+      );
+      this.scene.add(pMesh);
+
+      const vel = new THREE.Vector3(
+        (Math.random() - 0.5) * 7.5,
+        Math.random() * 4.5 + 1.0,
+        (Math.random() - 0.5) * 7.5
+      );
+
+      this.activeParticles.push({
+        mesh: pMesh,
+        velocity: vel,
+        scaleGrowth: 1.8,
+        alphaDecay: 1.2,
+        life: 0.85,
+        maxLife: 0.85,
+      });
+    }
+
+    // 4. High-intensity 3D scene flash PointLight (illuminates surrounding walls & enemies)
+    const flashLight = new THREE.PointLight(0xe0f2fe, 24.0, 32);
+    flashLight.position.copy(pos);
+    flashLight.position.y += 1.0;
+    this.scene.add(flashLight);
+
+    let lightLife = 0.35;
+    const fadeFlashLight = () => {
+      lightLife -= 0.04;
+      flashLight.intensity = Math.max(0, lightLife * 65);
+      if (lightLife > 0) {
+        requestAnimationFrame(fadeFlashLight);
+      } else {
+        this.scene.remove(flashLight);
+      }
+    };
+    fadeFlashLight();
+
+    // 5. Invoke callback to blind nearby AI enemies and whiteout player if within blast radius
+    if (onDetonate) {
+      onDetonate(pos.clone(), FLASHBANG_RADIUS);
+    }
+  }
+
+  /**
    * Per-frame physics simulation update: gravity, bounce, friction, and lifetimes
    */
   public update(delta: number) {
     const gravity = -18.0;
+
+    // 0. Update Thrown Flashbangs & Frag Grenades
+    for (let i = this.activeThrowables.length - 1; i >= 0; i--) {
+      const item = this.activeThrowables[i];
+      item.fuseTimer -= delta;
+
+      item.velocity.y += gravity * delta;
+      item.mesh.position.addScaledVector(item.velocity, delta);
+
+      item.mesh.rotation.x += item.rotVelocity.x * delta;
+      item.mesh.rotation.y += item.rotVelocity.y * delta;
+      item.mesh.rotation.z += item.rotVelocity.z * delta;
+
+      // Floor collision & metallic bounce
+      if (item.mesh.position.y <= 0.09) {
+        item.mesh.position.y = 0.09;
+        item.velocity.y = -item.velocity.y * 0.42;
+        item.velocity.x *= 0.72;
+        item.velocity.z *= 0.72;
+        item.rotVelocity.multiplyScalar(0.68);
+
+        if (!item.hasBounced) {
+          item.hasBounced = true;
+          soundEngine.playRicochet(item.mesh.position);
+        }
+      }
+
+      // Detonate when fuse expires
+      if (item.fuseTimer <= 0) {
+        const blastCenter = item.mesh.position.clone();
+        this.scene.remove(item.mesh);
+        this.activeThrowables.splice(i, 1);
+
+        if (item.type === 'flashbang') {
+          this.detonateFlashbang(blastCenter, item.onFlashbangDetonate);
+        } else {
+          soundEngine.playExplosion(blastCenter);
+          this.spawnExplosionEffect(blastCenter);
+          if (item.onFragDetonate) {
+            item.onFragDetonate(blastCenter, 8.5, 130);
+          }
+        }
+      }
+    }
 
     // 1. Update Debris Chunks
     for (let i = this.activeDebris.length - 1; i >= 0; i--) {
@@ -612,5 +950,7 @@ export class PhysicsAndDestructionManager {
     this.activeCasings = [];
     this.activeParticles.forEach(p => this.scene.remove(p.mesh));
     this.activeParticles = [];
+    this.activeThrowables.forEach(t => this.scene.remove(t.mesh));
+    this.activeThrowables = [];
   }
 }

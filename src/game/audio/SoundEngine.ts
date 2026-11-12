@@ -1396,6 +1396,125 @@ class SoundEngine {
     osc2.start(now + 0.03);
     osc2.stop(now + 0.1);
   }
+
+  /** Tactical Grenade / Flashbang Pin Pull & Spoon Lever Release */
+  public playPinPull() {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // 1. Metallic ring slide
+    const osc = this.ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(1400, now);
+    osc.frequency.exponentialRampToValueAtTime(2400, now + 0.05);
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.22, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.07);
+
+    // 2. Spoon lever ping (80ms later)
+    setTimeout(() => {
+      if (!this.ctx || !this.sfxGain || this.isMuted) return;
+      const t = this.ctx.currentTime;
+      const spoonOsc = this.ctx.createOscillator();
+      spoonOsc.type = 'sine';
+      spoonOsc.frequency.setValueAtTime(1950, t);
+      spoonOsc.frequency.exponentialRampToValueAtTime(820, t + 0.08);
+
+      const spoonGain = this.ctx.createGain();
+      spoonGain.gain.setValueAtTime(0.28, t);
+      spoonGain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+
+      spoonOsc.connect(spoonGain);
+      spoonGain.connect(this.sfxGain);
+      spoonOsc.start(t);
+      spoonOsc.stop(t + 0.1);
+    }, 80);
+  }
+
+  /**
+   * M84 Tactical Flashbang Detonation:
+   * High-pressure magnesium concussion snap + acoustic reflection + high-frequency tinnitus ear ring
+   */
+  public playFlashbangDetonation(
+    origin?: { x: number; y: number; z: number },
+    tinnitusIntensity: number = 0
+  ) {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    const chain = this.createSpatialAcousticChain({
+      origin,
+      isPlayer: false,
+      volumeMultiplier: 1.35,
+    });
+    const dest = chain ? chain.inputNode : this.sfxGain;
+
+    // 1. Supersonic magnesium flash crack (bright high-mid noise burst)
+    const bufferSize = Math.floor(this.ctx.sampleRate * 0.28);
+    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      output[i] = (Math.random() * 2 - 1) * Math.exp(-i / (this.ctx.sampleRate * 0.06));
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+
+    const bandpass = this.ctx.createBiquadFilter();
+    bandpass.type = 'bandpass';
+    bandpass.frequency.setValueAtTime(2100, now);
+    bandpass.Q.setValueAtTime(1.2, now);
+
+    const noiseGain = this.ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.95, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+
+    noise.connect(bandpass);
+    bandpass.connect(noiseGain);
+    noiseGain.connect(dest);
+    noise.start(now);
+
+    // 2. Concussion chest thump (190Hz -> 38Hz)
+    const punchOsc = this.ctx.createOscillator();
+    punchOsc.type = 'triangle';
+    punchOsc.frequency.setValueAtTime(190, now);
+    punchOsc.frequency.exponentialRampToValueAtTime(38, now + 0.22);
+
+    const punchGain = this.ctx.createGain();
+    punchGain.gain.setValueAtTime(0.85, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+
+    punchOsc.connect(punchGain);
+    punchGain.connect(dest);
+    punchOsc.start(now);
+    punchOsc.stop(now + 0.26);
+
+    // 3. Player Tinnitus Ear-Ringing if within blast radius
+    if (tinnitusIntensity > 0.05) {
+      const clampedTinnitus = Math.min(1.0, tinnitusIntensity);
+      const ringOsc = this.ctx.createOscillator();
+      ringOsc.type = 'sine';
+      ringOsc.frequency.setValueAtTime(3850, now);
+
+      const ringGain = this.ctx.createGain();
+      ringGain.gain.setValueAtTime(0.001, now);
+      ringGain.gain.linearRampToValueAtTime(0.16 * clampedTinnitus, now + 0.05);
+      ringGain.gain.exponentialRampToValueAtTime(0.0005, now + 2.4 * clampedTinnitus + 0.4);
+
+      ringOsc.connect(ringGain);
+      ringGain.connect(this.sfxGain);
+      ringOsc.start(now);
+      ringOsc.stop(now + 2.5 * clampedTinnitus + 0.45);
+    }
+  }
 }
 
 export const soundEngine = new SoundEngine();
+

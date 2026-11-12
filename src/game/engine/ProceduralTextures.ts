@@ -312,18 +312,63 @@ export function createCamoTexture(camoType: string): THREE.CanvasTexture {
         }
       }
     } else if (camoType === 'gold') {
-      // Polished royal gold with engraved scrollwork
-      ctx.fillStyle = '#d4af37';
+      // Polished royal gold with engraved scrollwork & brushed sheen
+      const goldGrad = ctx.createLinearGradient(0, 0, 1024, 1024);
+      goldGrad.addColorStop(0, '#facc15');
+      goldGrad.addColorStop(0.5, '#ca8a04');
+      goldGrad.addColorStop(1, '#eab308');
+      ctx.fillStyle = goldGrad;
       ctx.fillRect(0, 0, 1024, 1024);
 
-      ctx.strokeStyle = '#855e0c';
+      ctx.strokeStyle = 'rgba(113, 63, 18, 0.55)';
       ctx.lineWidth = 3;
       for (let i = 0; i < 24; i++) {
         ctx.strokeRect(40 + i * 20, 40 + i * 20, 1024 - (80 + i * 40), 1024 - (80 + i * 40));
       }
+      // Fine filigree diagonal cross-lines
+      ctx.strokeStyle = 'rgba(254, 240, 138, 0.45)';
+      ctx.lineWidth = 1.5;
+      for (let d = -1024; d < 1024; d += 48) {
+        ctx.beginPath();
+        ctx.moveTo(d, 0);
+        ctx.lineTo(d + 1024, 1024);
+        ctx.stroke();
+      }
     } else {
       // Tactical standard black
       return createGunmetalTexture();
+    }
+
+    // Overlay precision gunsmith receiver stamps, selector markings & QR UID matrix onto all skins for in-game inspection detail
+    ctx.fillStyle = 'rgba(10, 14, 20, 0.55)';
+    ctx.fillRect(48, 56, 430, 122);
+    ctx.strokeStyle = 'rgba(226, 232, 240, 0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(48, 56, 430, 122);
+
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = camoType === 'gold' ? '#fef08a' : camoType === 'neon' ? '#67e8f9' : 'rgba(241, 245, 249, 0.88)';
+    ctx.fillText('MK18-MOD1 // 5.56x45 NATO', 64, 90);
+    ctx.fillText(`SKIN // ${camoType.toUpperCase()} SPEC`, 64, 125);
+    ctx.fillText('SAFE · SEMI · AUTO // SER #V-8921', 64, 160);
+
+    // QR Data Matrix optical UID tag
+    ctx.fillStyle = 'rgba(8, 10, 14, 0.78)';
+    ctx.fillRect(800, 60, 140, 140);
+    ctx.fillStyle = camoType === 'neon' ? '#22d3ee' : camoType === 'gold' ? '#fde047' : 'rgba(226, 232, 240, 0.85)';
+    for (let y = 0; y < 7; y++) {
+      for (let x = 0; x < 7; x++) {
+        if ((x + y * 3) % 2 === 0) {
+          ctx.fillRect(810 + x * 17, 70 + y * 17, 14, 14);
+        }
+      }
+    }
+
+    // Picatinny rail index markings T1, T3, T5...
+    ctx.font = 'bold 16px monospace';
+    ctx.fillStyle = 'rgba(226, 232, 240, 0.65)';
+    for (let i = 1; i <= 18; i += 2) {
+      ctx.fillText(`T${i}`, 50 + i * 48, 380);
     }
 
     const texture = new THREE.CanvasTexture(canvas);

@@ -351,6 +351,74 @@ export class EnemyAIManager {
   }
 
   /**
+   * Builds a 3D rotating stun halo above a blinded enemy's head
+   */
+  private buildStunHaloMesh(isDrone: boolean): THREE.Group {
+    const haloGroup = new THREE.Group();
+    haloGroup.position.set(0, isDrone ? 0.55 : 2.18, 0);
+
+    const ringGeo = new THREE.TorusGeometry(0.32, 0.018, 8, 24);
+    ringGeo.rotateX(Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    haloGroup.add(ring);
+
+    const pipGeo = new THREE.OctahedronGeometry(0.055, 0);
+    const pipMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+    for (let i = 0; i < 3; i++) {
+      const angle = (i * Math.PI * 2) / 3;
+      const pip = new THREE.Mesh(pipGeo, pipMat);
+      pip.position.set(Math.cos(angle) * 0.32, 0, Math.sin(angle) * 0.32);
+      haloGroup.add(pip);
+    }
+
+    return haloGroup;
+  }
+
+  /**
+   * Blinds and disorients all live AI enemies within the Flashbang blast radius.
+   * Returns the count of blinded enemies.
+   */
+  public applyFlashbangBlindness(blastCenter: THREE.Vector3, blastRadius: number): number {
+    let blindedCount = 0;
+
+    this.enemies.forEach((enemy) => {
+      if (enemy.state === 'dead') return;
+
+      const dist = enemy.mesh.position.distanceTo(blastCenter);
+      if (dist <= blastRadius) {
+        blindedCount++;
+        const falloff = Math.max(0.35, 1.0 - dist / (blastRadius * 1.25));
+        const blindDuration = 5.2 * falloff;
+
+        enemy.blindedTimer = Math.max(enemy.blindedTimer || 0, blindDuration);
+        enemy.state = 'blinded';
+        enemy.shootCooldown = Math.max(enemy.shootCooldown, 1.5);
+
+        // Suppress active weapon telegraph while blinded
+        if (enemy.type === 'rifleman' && enemy.telegraphGlow instanceof THREE.Mesh) {
+          (enemy.telegraphGlow.material as THREE.MeshBasicMaterial).opacity = 0;
+        } else if (enemy.type === 'drone' && enemy.telegraphGlow instanceof THREE.PointLight) {
+          enemy.telegraphGlow.intensity = 0.2;
+        }
+
+        // Attach or reveal 3D stun halo above head
+        if (!enemy.stunHalo) {
+          enemy.stunHalo = this.buildStunHaloMesh(enemy.type === 'drone');
+          enemy.mesh.add(enemy.stunHalo);
+        }
+        enemy.stunHalo.visible = true;
+      }
+    });
+
+    return blindedCount;
+  }
+
+  /**
    * Update enemy AI states, pathfinding, and combat targeting
    */
   public update(
@@ -363,6 +431,33 @@ export class EnemyAIManager {
 
       const mesh = enemy.mesh;
       const enemyPos = mesh.position;
+
+      // Handle Flashbang Blindness / Concussion State
+      if (enemy.blindedTimer && enemy.blindedTimer > 0) {
+        enemy.blindedTimer -= delta;
+        enemy.state = 'blinded';
+
+        // Animate disoriented stagger & spinning stun halo
+        const t = performance.now() * 0.008;
+        mesh.rotation.z = Math.sin(t + enemyPos.x) * 0.14;
+        mesh.rotation.y += Math.cos(t * 0.7) * delta * 1.6;
+
+        if (enemy.stunHalo) {
+          enemy.stunHalo.visible = true;
+          enemy.stunHalo.rotation.y += delta * 5.5;
+        }
+
+        if (enemy.blindedTimer <= 0) {
+          enemy.blindedTimer = 0;
+          enemy.state = 'alert';
+          mesh.rotation.z = 0;
+          if (enemy.stunHalo) {
+            enemy.stunHalo.visible = false;
+          }
+        }
+        return;
+      }
+
       const distToPlayer = enemyPos.distanceTo(playerPos);
 
       // Line of sight / alert radius (35m)
@@ -440,7 +535,12 @@ export class EnemyAIManager {
 
     if (enemy.health <= 0) {
       enemy.state = 'dead';
+      enemy.blindedTimer = 0;
+      if (enemy.stunHalo) {
+        enemy.stunHalo.visible = false;
+      }
       // Trigger ragdoll collapse
+      enemy.mesh.rotation.z = 0;
       enemy.mesh.rotation.x = Math.PI / 2;
       enemy.mesh.position.y = 0.2;
 

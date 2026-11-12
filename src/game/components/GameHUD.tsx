@@ -1,7 +1,8 @@
 import React from 'react';
 import { PlayerStats, CampaignMission, HitMarkerEvent } from '../types';
-import { Shield, Crosshair, Bomb, AlertTriangle, CheckCircle2, Radio } from 'lucide-react';
+import { Shield, Crosshair, Bomb, CheckCircle2, Zap, Eye, Sparkles } from 'lucide-react';
 import { AcousticState } from '../audio/SoundEngine';
+import { CAMO_VARIANTS } from '../data/gunsmithData';
 
 interface GameHUDProps {
   stats: PlayerStats;
@@ -10,11 +11,18 @@ interface GameHUDProps {
   lastDamagedTime: number;
   cameraYaw: number;
   activeWeaponName: string;
+  activeCamoId?: string;
   isPointerLocked: boolean;
   onRequestPointerLock: () => void;
   enemyCount: number;
   skyboxLabel?: string;
   acousticState?: AcousticState;
+  flashbangWhiteout?: number;
+  blindedEnemiesCount?: number;
+  onThrowFlashbang?: () => void;
+  onThrowFrag?: () => void;
+  onInspectWeapon?: () => void;
+  onSelectCamo?: (camoId: string) => void;
 }
 
 export const GameHUD: React.FC<GameHUDProps> = ({
@@ -24,12 +32,20 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   lastDamagedTime,
   cameraYaw,
   activeWeaponName,
+  activeCamoId = 'default',
   isPointerLocked,
   onRequestPointerLock,
   enemyCount,
   skyboxLabel,
   acousticState,
+  flashbangWhiteout = 0,
+  blindedEnemiesCount = 0,
+  onThrowFlashbang,
+  onThrowFrag,
+  onInspectWeapon,
+  onSelectCamo,
 }) => {
+  const activeCamo = CAMO_VARIANTS.find((c) => c.id === activeCamoId) || CAMO_VARIANTS[0];
   // Hit flash intensity based on recent damage
   const timeSinceHit = performance.now() - lastDamagedTime;
   const isHitActive = timeSinceHit < 400;
@@ -53,11 +69,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         />
       )}
 
+      {/* Tactical Flashbang Screen-Whiteout & Optical Overload Overlay */}
+      {flashbangWhiteout > 0.01 && (
+        <div
+          className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center"
+          style={{
+            backgroundColor: `rgba(248, 252, 255, ${Math.min(1, flashbangWhiteout * 1.15)})`,
+          }}
+        >
+          {flashbangWhiteout > 0.15 && (
+            <div
+              className="px-5 py-2.5 rounded border border-cyan-600/40 bg-slate-950/20 font-mono text-xs font-bold tracking-widest text-slate-900 uppercase"
+              style={{ opacity: Math.min(1, flashbangWhiteout) }}
+            >
+              OPTICAL OVERLOAD · M84 FLASHBANG CONCUSSION
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Screen Vignette */}
       <div className="absolute inset-0 vignette-effect" />
 
-      {/* Click-to-Play pointer lock banner if pointer lock dropped */}
-      {!isPointerLocked && (
+      {/* Click-to-Play pointer lock banner if pointer lock dropped (hidden while inspecting weapon skin) */}
+      {!isPointerLocked && !stats.isInspecting && (
         <div className="absolute inset-0 z-40 bg-black/60 flex items-center justify-center pointer-events-auto">
           <button
             onClick={onRequestPointerLock}
@@ -126,6 +161,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </span>
             </div>
           )}
+          {blindedEnemiesCount > 0 && (
+            <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold text-amber-300 mt-1 tracking-wider uppercase">
+              <Zap className="w-3 h-3 text-amber-400" />
+              <span>{blindedEnemiesCount} HOSTILE{blindedEnemiesCount > 1 ? 'S' : ''} BLINDED / STUNNED</span>
+            </div>
+          )}
         </div>
 
         {/* Top-Right: Tactical Radar Minimap */}
@@ -150,22 +191,90 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       </div>
 
-      {/* WEAPON INSPECT OVERLAY BADGE */}
+      {/* WEAPON SKIN & CHASSIS INSPECTION TELEMETRY OVERLAY (Triggered by 'I' key / isInspecting state) */}
       {stats.isInspecting && (
-        <div className="absolute top-24 left-1/2 -translate-x-1/2 px-4 py-2 bg-slate-950/90 border border-cyan-500/80 rounded-lg text-center z-30 shadow-2xl pointer-events-none">
-          <div className="text-[10px] font-mono text-cyan-400 tracking-widest uppercase flex items-center justify-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-            <span>INSPECTING WEAPON CHASSIS</span>
+        <div
+          data-testid="weapon-inspect-overlay"
+          className="absolute top-28 left-1/2 -translate-x-1/2 w-full max-w-md px-5 py-3.5 bg-slate-950/92 border border-cyan-500/80 rounded-lg z-30 shadow-2xl pointer-events-auto"
+        >
+          <div className="flex items-center justify-between text-[10px] font-mono text-cyan-400 tracking-widest uppercase">
+            <div className="flex items-center gap-1.5">
+              <Eye className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+              <span>WEAPON SKIN INSPECTION ACTIVE [I]</span>
+            </div>
+            <span className="tabular-nums text-slate-300">
+              {Math.round((stats.inspectProgress ?? 0) * 100)}%
+            </span>
           </div>
-          <div className="font-tactical font-black text-sm text-white tracking-wider mt-0.5">{activeWeaponName}</div>
-          <div className="text-[10px] font-mono text-slate-400 mt-0.5">
-            {stats.currentWeaponIndex === 0 ? 'CALIBER: 5.56x45MM NATO · MODULAR AR PLATFORM' : 'CALIBER: 9x19MM · TACTICAL SIDEARM'}
+
+          {/* Inspection Phase Progress Bar */}
+          <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden my-1.5">
+            <div
+              className="h-full bg-cyan-400 transition-all duration-75"
+              style={{ width: `${Math.round((stats.inspectProgress ?? 0) * 100)}%` }}
+            />
           </div>
+
+          <div className="flex items-center justify-between mt-1">
+            <div>
+              <div className="font-tactical font-black text-base text-white tracking-wider">
+                {activeWeaponName}
+              </div>
+              <div className="text-[11px] font-mono text-amber-400 flex items-center gap-1.5 mt-0.5">
+                <Sparkles className="w-3 h-3 text-amber-400" />
+                <span>SKIN: {activeCamo.name.toUpperCase()}</span>
+                <span className="px-1.5 py-0.2 bg-amber-500/20 border border-amber-500/50 rounded text-[9px] text-amber-300">
+                  {activeCamo.rarity.toUpperCase()}
+                </span>
+              </div>
+            </div>
+            <div
+              className="w-7 h-7 rounded-md border border-white/40 shadow-inner shrink-0"
+              style={{ backgroundColor: activeCamo.color }}
+              title={activeCamo.name}
+            />
+          </div>
+
+          <div className="text-[10px] font-mono text-slate-300 mt-1.5 leading-snug">
+            {activeCamo.description}
+          </div>
+
+          <div className="text-[9px] font-mono text-cyan-300/90 mt-1.5 uppercase tracking-wider">
+            STAGE // {stats.inspectPhaseLabel || 'LEFT RECEIVER · SERIAL UID & SKIN FINISH'}
+          </div>
+
+          {/* Live In-Game Weapon Skin Finish Swatches */}
+          {onSelectCamo && (
+            <div className="mt-2.5 pt-2 border-t border-slate-800/90 flex items-center justify-between gap-2">
+              <span className="text-[9px] font-mono text-slate-400 uppercase tracking-wider">
+                FINISH [N]:
+              </span>
+              <div className="flex items-center gap-1.5">
+                {CAMO_VARIANTS.map((camo) => {
+                  const isSelected = camo.id === activeCamo.id;
+                  return (
+                    <button
+                      key={camo.id}
+                      onClick={() => onSelectCamo(camo.id)}
+                      className={`px-2 py-0.5 rounded text-[9px] font-mono uppercase transition-all cursor-pointer border ${
+                        isSelected
+                          ? 'bg-cyan-500/25 border-cyan-400 text-white font-bold'
+                          : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500'
+                      }`}
+                      title={`Apply ${camo.name} (${camo.rarity})`}
+                    >
+                      {camo.id === 'default' ? 'STD' : camo.id.slice(0, 4).toUpperCase()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* CENTER: Dynamic Tactical Crosshair & Hitmarkers */}
-      {!stats.isAiming && (
+      {/* CENTER: Dynamic Tactical Crosshair & Hitmarkers (hidden during weapon inspection for clear view) */}
+      {!stats.isAiming && !stats.isInspecting && (
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
           {/* Top Line */}
           <div
@@ -258,6 +367,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <div className="text-xs font-mono text-cyan-400 tracking-wider uppercase mb-0.5">
             {activeWeaponName}
           </div>
+          <div className="text-[10px] font-mono text-amber-400/90 mb-0.5 uppercase">
+            SKIN: {activeCamo.name} ({activeCamo.rarity})
+          </div>
           <div className="text-[10px] font-mono text-slate-500 mb-1">
             {stats.currentWeaponIndex === 0 ? '5.56x45MM NATO // AUTO' : '9x19MM PARABELLUM // SEMI'}
           </div>
@@ -280,18 +392,43 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             )}
           </div>
 
-          {/* Tactical Equipment (Grenades & Stance) */}
-          <div className="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-slate-800/80 text-xs font-mono">
-            <div className="flex items-center gap-1 text-slate-300">
+          {/* Tactical Equipment (Flashbangs, Frag Grenades, Inspect & Stance) */}
+          <div className="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-slate-800/80 text-xs font-mono pointer-events-auto">
+            <button
+              onClick={onThrowFlashbang}
+              className={`flex items-center gap-1 transition-colors cursor-pointer ${
+                stats.flashbangs > 0 ? 'text-cyan-300 hover:text-white' : 'text-slate-600'
+              }`}
+              title="Throw M84 Tactical Flashbang [F]"
+            >
+              <Zap className="w-3.5 h-3.5 text-cyan-400" />
+              <span>[F] FLASH x{stats.flashbangs}</span>
+            </button>
+            <button
+              onClick={onThrowFrag}
+              className={`flex items-center gap-1 transition-colors cursor-pointer ${
+                stats.grenades > 0 ? 'text-slate-300 hover:text-white' : 'text-slate-600'
+              }`}
+              title="Throw M67 Frag Grenade [G]"
+            >
               <Bomb className="w-3.5 h-3.5 text-amber-400" />
-              <span>[G] x{stats.grenades}</span>
-            </div>
+              <span>[G] FRAG x{stats.grenades}</span>
+            </button>
             <div className="text-slate-400">
               <span>[C] {stats.isCrouching ? 'CROUCH' : 'STAND'}</span>
             </div>
-            <div className="text-cyan-400/90">
-              <span>[I] INSPECT</span>
-            </div>
+            <button
+              onClick={onInspectWeapon}
+              className={`flex items-center gap-1 transition-colors cursor-pointer ${
+                stats.isInspecting
+                  ? 'text-amber-300 font-bold'
+                  : 'text-cyan-400 hover:text-white'
+              }`}
+              title="Inspect Equipped Weapon Skin Detail [I]"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>{stats.isInspecting ? '[I] INSPECTING' : '[I] INSPECT'}</span>
+            </button>
             <div className="text-slate-400">
               <span>[1/2] SWAP</span>
             </div>

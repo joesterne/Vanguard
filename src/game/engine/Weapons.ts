@@ -15,6 +15,7 @@ export interface WeaponRig {
   holoSightMesh?: THREE.Mesh;
   muzzleFlashMesh?: THREE.Mesh;
   muzzleLight?: THREE.PointLight;
+  inspectLight?: THREE.PointLight;
   reticleSprite?: THREE.Sprite;
   currentCamo: string;
 }
@@ -69,13 +70,21 @@ export function buildMK18WeaponMesh(camoId: string = 'default'): WeaponRig {
   const metalBumpMap = createMetalBumpMap();
   const polymerStippleTex = createPolymerStippleTexture();
 
-  // 1. Materials with realistic PBR surface properties
+  // 1. Materials with realistic PBR surface properties calibrated per weapon skin
+  const isGold = camoId === 'gold';
+  const isNeon = camoId === 'neon';
+  const isObsidian = camoId === 'obsidian';
+  const isDamascus = camoId === 'damascus';
+
   const receiverMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
     map: camoId === 'default' ? gunmetalTexture : camoTexture,
     bumpMap: metalBumpMap,
-    bumpScale: 0.0018,
-    metalness: 0.78,
-    roughness: 0.28,
+    bumpScale: 0.0022,
+    metalness: isGold ? 0.92 : isDamascus ? 0.88 : 0.78,
+    roughness: isGold ? 0.18 : isDamascus ? 0.22 : 0.28,
+    emissive: isNeon ? 0x0891b2 : isObsidian ? 0x3b0764 : isGold ? 0x422006 : 0x000000,
+    emissiveIntensity: isNeon ? 0.28 : isObsidian ? 0.2 : isGold ? 0.12 : 0,
   });
 
   const polymerMat = new THREE.MeshStandardMaterial({
@@ -255,9 +264,9 @@ export function buildMK18WeaponMesh(camoId: string = 'default'): WeaponRig {
   magBody.castShadow = true;
   magGroup.add(magBody);
 
-  // Baseplate bumper
+  // Baseplate bumper accented with weapon skin
   const magBumperGeo = new THREE.BoxGeometry(0.034, 0.016, 0.065);
-  const magBumper = new THREE.Mesh(magBumperGeo, darkSteelMat);
+  const magBumper = new THREE.Mesh(magBumperGeo, receiverMat);
   magBumper.position.set(0, -0.15, 0.03);
   magBumper.rotation.x = 0.18;
   magGroup.add(magBumper);
@@ -276,11 +285,11 @@ export function buildMK18WeaponMesh(camoId: string = 'default'): WeaponRig {
   const sightGroup = new THREE.Group();
   sightGroup.position.set(0, 0.054, -0.06);
 
-  // Hood protective aluminum shroud
+  // Hood protective aluminum shroud finished in active weapon skin
   const sightHoodGeo = new THREE.CylinderGeometry(0.025, 0.025, 0.095, 16, 1, false, 0, Math.PI);
   sightHoodGeo.rotateZ(Math.PI);
   sightHoodGeo.rotateX(Math.PI / 2);
-  const sightHood = new THREE.Mesh(sightHoodGeo, darkSteelMat);
+  const sightHood = new THREE.Mesh(sightHoodGeo, receiverMat);
   sightHood.position.set(0, 0.022, 0);
   sightHood.scale.set(0.9, 0.85, 1.0);
   sightGroup.add(sightHood);
@@ -360,6 +369,11 @@ export function buildMK18WeaponMesh(camoId: string = 'default'): WeaponRig {
   muzzleLight.position.set(0, 0.02, -0.62);
   group.add(muzzleLight);
 
+  // Dedicated studio key light for in-game weapon skin inspection ('I' key)
+  const inspectLight = new THREE.PointLight(0xe0f2fe, 0, 2.5);
+  inspectLight.position.set(0.08, 0.14, -0.05);
+  group.add(inspectLight);
+
   return {
     group,
     muzzlePos: new THREE.Vector3(0, 0.02, -0.62),
@@ -367,6 +381,7 @@ export function buildMK18WeaponMesh(camoId: string = 'default'): WeaponRig {
     holoSightMesh: sightHood,
     muzzleFlashMesh,
     muzzleLight,
+    inspectLight,
     reticleSprite,
     currentCamo: camoId,
   };
@@ -385,12 +400,19 @@ export function buildPistolWeaponMesh(camoId: string = 'default'): WeaponRig {
   const metalBumpMap = createMetalBumpMap();
   const polymerStippleTex = createPolymerStippleTexture();
 
+  const isGold = camoId === 'gold';
+  const isNeon = camoId === 'neon';
+  const isObsidian = camoId === 'obsidian';
+
   const slideMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
     map: camoId === 'default' ? gunmetalTexture : camoTexture,
     bumpMap: metalBumpMap,
-    bumpScale: 0.0016,
-    metalness: 0.88,
-    roughness: 0.22,
+    bumpScale: 0.002,
+    metalness: isGold ? 0.92 : 0.88,
+    roughness: isGold ? 0.18 : 0.22,
+    emissive: isNeon ? 0x0891b2 : isObsidian ? 0x3b0764 : isGold ? 0x422006 : 0x000000,
+    emissiveIntensity: isNeon ? 0.28 : isObsidian ? 0.2 : isGold ? 0.12 : 0,
   });
 
   const frameMat = new THREE.MeshStandardMaterial({
@@ -518,12 +540,17 @@ export function buildPistolWeaponMesh(camoId: string = 'default'): WeaponRig {
   muzzleLight.position.set(0, 0.038, -0.17);
   group.add(muzzleLight);
 
+  const inspectLight = new THREE.PointLight(0xe0f2fe, 0, 2.5);
+  inspectLight.position.set(0.06, 0.12, -0.02);
+  group.add(inspectLight);
+
   return {
     group,
     muzzlePos: new THREE.Vector3(0, 0.038, -0.17),
     ejectionPos: new THREE.Vector3(0.02, 0.04, -0.01),
     muzzleFlashMesh,
     muzzleLight,
+    inspectLight,
     currentCamo: camoId,
   };
 }
