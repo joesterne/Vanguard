@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    background-color: #050608;
+    color: #e2e8f0;
+  }
+}
+
+.font-tactical {
+  font-family: 'Chakra Petch', sans-serif;
+}
+
+.font-mono-code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Custom dark tactical scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(10, 15, 22, 0.7);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(70, 90, 120, 0.6);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 160, 210, 0.8);
+}
+
+/* Tactical HUD scanline and vignette overlay */
+.vignette-effect {
+  background: radial-gradient(circle at center, transparent 40%, rgba(0, 0, 0, 0.85) 100%);
+  pointer-events: none;
+}
+
+.night-vision-effect {
+  background: radial-gradient(circle at center, rgba(34, 197, 94, 0.12) 0%, rgba(5, 40, 15, 0.7) 100%);
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.hit-flash-effect {
+  background: radial-gradient(circle at center, transparent 30%, rgba(220, 38, 38, 0.5) 100%);
+  pointer-events: none;
+}
+
+/* Holographic Command Table Aesthetics */
+.holo-grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(6, 182, 212, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(6, 182, 212, 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.holo-scanlines {
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 2px,
+    rgba(6, 182, 212, 0.04) 3px,
+    rgba(2, 6, 23, 0.18) 4px
+  );
+}
+
+.holo-panel {
+  background: linear-gradient(165deg, rgba(6, 20, 35, 0.84) 0%, rgba(3, 10, 20, 0.90) 100%);
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  box-shadow:
+    0 0 24px rgba(6, 182, 212, 0.12),
+    inset 0 0 18px rgba(6, 182, 212, 0.06);
+  backdrop-filter: blur(10px);
+}
+
+.holo-panel-active {
+  background: linear-gradient(165deg, rgba(8, 38, 60, 0.88) 0%, rgba(4, 18, 34, 0.92) 100%);
+  border: 1px solid rgba(34, 211, 238, 0.72);
+  box-shadow:
+    0 0 28px rgba(6, 182, 212, 0.25),
+    inset 0 0 20px rgba(34, 211, 238, 0.12);
+}
+
+.holo-text-glow {
+  text-shadow: 0 0 12px rgba(34, 211, 238, 0.45);
+}
+

@@ -1,0 +1,121 @@
+import React from 'react';
+import { Award, RotateCcw, Home, Target, Clock, Zap, ArrowRight } from 'lucide-react';
+import { PlayerStats, CampaignMission } from '../types';
+
+interface VictoryModalProps {
+  stats: PlayerStats;
+  mission?: CampaignMission;
+  onNextMission: () => void;
+  onRestart: () => void;
+  onExitToMenu: () => void;
+  hasNextMission: boolean;
+}
+
+export const VictoryModal: React.FC<VictoryModalProps> = ({
+  stats,
+  mission,
+  onNextMission,
+  onRestart,
+  onExitToMenu,
+  hasNextMission,
+}) => {
+  const accuracy = stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0;
+  const timeFormatted = `${Math.floor(stats.timeElapsed / 60)}m ${Math.floor(stats.timeElapsed % 60)}s`;
+  const xpEarned = stats.kills * 150 + stats.headshots * 100 + 1200;
+
+  return (
+    <div className="absolute inset-0 z-50 bg-black/85 flex items-center justify-center p-6 select-none animate-in fade-in duration-300">
+      <div className="bg-slate-950 border border-cyan-500/60 rounded-lg max-w-lg w-full p-6 shadow-2xl text-center">
+        {/* Header Badge */}
+        <div className="flex justify-center mb-3">
+          <div className="w-14 h-14 rounded-full bg-cyan-950/80 border border-cyan-500 flex items-center justify-center">
+            <Award className="w-7 h-7 text-cyan-400" />
+          </div>
+        </div>
+
+        <div className="font-tactical font-black text-3xl text-cyan-400 tracking-wider mb-1">
+          MISSION ACCOMPLISHED
+        </div>
+        <div className="text-xs font-mono text-emerald-400 mb-6 uppercase tracking-widest">
+          SECTOR SECURED // {mission?.title ?? 'OPERATIONAL SUCCESS'}
+        </div>
+
+        {/* Combat Stats Grid */}
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="bg-slate-900/70 border border-slate-800 p-3 rounded text-left">
+            <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 mb-0.5">
+              <Target className="w-3.5 h-3.5 text-red-400" />
+              <span>ELIMINATIONS</span>
+            </div>
+            <div className="text-2xl font-bold font-mono text-white tabular-nums">{stats.kills}</div>
+          </div>
+
+          <div className="bg-slate-900/70 border border-slate-800 p-3 rounded text-left">
+            <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 mb-0.5">
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              <span>HEADSHOTS</span>
+            </div>
+            <div className="text-2xl font-bold font-mono text-white tabular-nums">{stats.headshots}</div>
+          </div>
+
+          <div className="bg-slate-900/70 border border-slate-800 p-3 rounded text-left">
+            <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 mb-0.5">
+              <Award className="w-3.5 h-3.5 text-cyan-400" />
+              <span>ACCURACY</span>
+            </div>
+            <div className="text-2xl font-bold font-mono text-white tabular-nums">{accuracy}%</div>
+          </div>
+
+          <div className="bg-slate-900/70 border border-slate-800 p-3 rounded text-left">
+            <div className="flex items-center gap-1.5 text-xs font-mono text-slate-400 mb-0.5">
+              <Clock className="w-3.5 h-3.5 text-emerald-400" />
+              <span>CLEAR TIME</span>
+            </div>
+            <div className="text-2xl font-bold font-mono text-white tabular-nums">{timeFormatted}</div>
+          </div>
+        </div>
+
+        {/* Battle Pass XP Banner */}
+        <div className="bg-gradient-to-r from-purple-950/60 to-slate-900 border border-purple-800/60 p-3 rounded mb-6 flex items-center justify-between text-left">
+          <div className="flex items-center gap-2.5">
+            <Award className="w-5 h-5 text-purple-400" />
+            <div>
+              <div className="text-xs font-mono text-purple-300">BATTLE PASS PROGRESS</div>
+              <div className="text-xs text-slate-400">Season 1: Global Reckoning</div>
+            </div>
+          </div>
+          <div className="font-mono font-bold text-emerald-400 text-sm">+{xpEarned} XP</div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="grid grid-cols-2 gap-3">
+          {hasNextMission ? (
+            <button
+              onClick={onNextMission}
+              className="col-span-2 flex items-center justify-center gap-2 py-3 bg-cyan-500 hover:bg-cyan-400 text-black font-tactical font-bold text-sm tracking-wider rounded transition-colors"
+            >
+              <span>NEXT MISSION</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={onRestart}
+              className="flex items-center justify-center gap-2 py-3 bg-cyan-500 hover:bg-cyan-400 text-black font-tactical font-bold text-sm tracking-wider rounded transition-colors"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>REPLAY MISSION</span>
+            </button>
+          )}
+
+          <button
+            onClick={onExitToMenu}
+            className={`${hasNextMission ? 'col-span-2' : ''} flex items-center justify-center gap-2 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-tactical font-semibold text-xs tracking-wider rounded transition-colors`}
+          >
+            <Home className="w-4 h-4" />
+            <span>RETURN TO TITLE SCREEN</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,6 @@
+{
+  "name": "Project Vanguard: Zero Hour",
+  "description": "High-fidelity modern 3D tactical first-person shooter featuring realistic physics, destructible environments, tactical campaign missions, multiplayer matchmaking, seasonal battle pass, and gunsmith store.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
