@@ -1,8 +1,9 @@
 import React from 'react';
 import { PlayerStats, CampaignMission, HitMarkerEvent } from '../types';
-import { Shield, Crosshair, Bomb, CheckCircle2, Zap, Eye, Sparkles } from 'lucide-react';
+import { Shield, Crosshair, Bomb, CheckCircle2, Zap, Eye, Sparkles, RotateCw } from 'lucide-react';
 import { AcousticState } from '../audio/SoundEngine';
 import { CAMO_VARIANTS } from '../data/gunsmithData';
+import { computeMagazineTelemetry } from '../engine/magazineTelemetry';
 
 interface GameHUDProps {
   stats: PlayerStats;
@@ -23,6 +24,9 @@ interface GameHUDProps {
   onThrowFrag?: () => void;
   onInspectWeapon?: () => void;
   onSelectCamo?: (camoId: string) => void;
+  onToggleCrouch?: () => void;
+  onTriggerShot?: () => void;
+  onReloadWeapon?: () => void;
 }
 
 export const GameHUD: React.FC<GameHUDProps> = ({
@@ -44,6 +48,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onThrowFrag,
   onInspectWeapon,
   onSelectCamo,
+  onToggleCrouch,
+  onTriggerShot,
+  onReloadWeapon,
 }) => {
   const activeCamo = CAMO_VARIANTS.find((c) => c.id === activeCamoId) || CAMO_VARIANTS[0];
   // Hit flash intensity based on recent damage
@@ -53,11 +60,47 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   // Compass degrees
   const compassDeg = Math.round(((-cameraYaw * 180) / Math.PI) % 360 + 360) % 360;
 
-  // Crosshair spread calculation based on stance
-  let crosshairGap = 12;
-  if (stats.isSprinting) crosshairGap = 26;
-  else if (stats.isCrouching) crosshairGap = 8;
-  else if (stats.isAiming) crosshairGap = 0; // Fades out in ADS so holo reticle is visible
+  // Dynamic Crosshair spread & recoil bloom telemetry driven by FPSController
+  const crosshairGap = Math.round(
+    stats.crosshairSpread ?? (stats.isSprinting ? 28 : stats.isCrouching ? 7 : 11)
+  );
+  const recoilBloom = stats.recoilBloom ?? 0;
+  const accuracyPct =
+    stats.accuracyPct ?? (stats.isCrouching ? 92 : stats.isSprinting ? 48 : 85);
+  const stabilityLabel =
+    stats.stabilityLabel ??
+    (stats.isCrouching ? 'CROUCHED · HIGH STABILITY' : 'STANDING · STEADY');
+
+  // Dynamic blade length & reactive color based on recoil bloom and stance
+  const bladeLength = stats.isCrouching ? 10 : recoilBloom > 0.35 ? 15 : 12;
+  const isHighBloom = recoilBloom >= 0.4 || stats.isGrounded === false;
+  const isHighPrecision = !isHighBloom && (stats.isCrouching || accuracyPct >= 88);
+  const bladeColorClass = isHighBloom
+    ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.85)]'
+    : isHighPrecision
+    ? 'bg-cyan-300 shadow-[0_0_6px_rgba(34,211,238,0.8)]'
+    : 'bg-white/95 shadow-[0_0_4px_rgba(0,0,0,0.9)]';
+  const strokeHex = isHighBloom ? '#fbbf24' : isHighPrecision ? '#67e8f9' : '#f8fafc';
+
+  // Real-time Active Magazine & Reserve Magazine Pouches Telemetry
+  const defaultMagSize = stats.currentWeaponIndex === 0 ? 30 : 15;
+  const defaultMaxReserve = stats.currentWeaponIndex === 0 ? 180 : 90;
+  const magTelemetry = computeMagazineTelemetry(
+    stats.currentMag,
+    stats.magazineSize ?? defaultMagSize,
+    stats.reserveAmmo,
+    stats.maxReserveAmmo ?? defaultMaxReserve
+  );
+  const activeMagVisualRatio = stats.isReloading
+    ? stats.reloadProgress ?? 0.5
+    : magTelemetry.activeMagFillRatio;
+  const activeMagColorHex = stats.isReloading
+    ? '#38bdf8'
+    : magTelemetry.activeMagStatus === 'critical' || magTelemetry.activeMagStatus === 'empty'
+    ? '#ef4444'
+    : magTelemetry.activeMagStatus === 'low'
+    ? '#f59e0b'
+    : '#22d3ee';
 
   return (
     <div className="absolute inset-0 z-20 pointer-events-none select-none flex flex-col justify-between p-4 md:p-6 overflow-hidden">
@@ -91,17 +134,21 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       {/* Screen Vignette */}
       <div className="absolute inset-0 vignette-effect" />
 
-      {/* Click-to-Play pointer lock banner if pointer lock dropped (hidden while inspecting weapon skin) */}
+      {/* Click-to-Play pointer lock banner positioned above center so the dynamic crosshair is always unobstructed */}
       {!isPointerLocked && !stats.isInspecting && (
-        <div className="absolute inset-0 z-40 bg-black/60 flex items-center justify-center pointer-events-auto">
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 z-40 pointer-events-auto">
           <button
             onClick={onRequestPointerLock}
-            className="flex flex-col items-center gap-3 px-8 py-5 bg-slate-900 border-2 border-cyan-500 rounded-lg shadow-2xl hover:bg-slate-800 transition-colors"
+            className="flex items-center gap-3 px-5 py-2.5 bg-slate-950/90 border border-cyan-500/80 rounded-lg shadow-2xl hover:bg-slate-900 transition-colors cursor-pointer"
           >
-            <Crosshair className="w-8 h-8 text-cyan-400 animate-spin" style={{ animationDuration: '6s' }} />
-            <div className="text-center">
-              <div className="font-tactical font-bold text-lg text-white tracking-wider">CLICK TO ENGAGE / LOCK AIM</div>
-              <div className="text-xs font-mono text-cyan-400 mt-1">Press ESC anytime to open tactical pause menu</div>
+            <Crosshair className="w-5 h-5 text-cyan-400 animate-spin shrink-0" style={{ animationDuration: '6s' }} />
+            <div className="text-left">
+              <div className="font-tactical font-bold text-sm text-white tracking-wider">
+                CLICK TO ENGAGE AIM LOCK
+              </div>
+              <div className="text-[10px] font-mono text-cyan-400">
+                WASD Move · C Crouch · J/Click Fire · ESC Pause
+              </div>
             </div>
           </button>
         </div>
@@ -273,31 +320,83 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
-      {/* CENTER: Dynamic Tactical Crosshair & Hitmarkers (hidden during weapon inspection for clear view) */}
+      {/* CENTER: Dynamic Ballistic Crosshair (expands with movement, recoil bloom, and stance) */}
       {!stats.isAiming && !stats.isInspecting && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-          {/* Top Line */}
+        <div
+          data-testid="dynamic-crosshair"
+          data-gap={crosshairGap}
+          data-accuracy={accuracyPct}
+          data-stance={stats.isCrouching ? 'crouch' : stats.isSprinting ? 'sprint' : 'stand'}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+          style={{ opacity: stats.isReloading ? 0.35 : 1 }}
+        >
+          {/* SVG Dispersion Ring & Crouched Stability Corner Brackets */}
+          <svg
+            width="140"
+            height="140"
+            viewBox="-70 -70 140 140"
+            className="absolute -left-[70px] -top-[70px] overflow-visible pointer-events-none"
+          >
+            {/* Dynamic ballistic dispersion cone circle */}
+            <circle
+              cx="0"
+              cy="0"
+              r={crosshairGap + 2}
+              fill="none"
+              stroke={strokeHex}
+              strokeWidth="1"
+              strokeDasharray="4 6"
+              strokeOpacity={recoilBloom > 0.1 || (stats.movementSpeed ?? 0) > 0.5 ? 0.55 : 0.28}
+            />
+            {/* Crouched stance stabilization corner brackets */}
+            {stats.isCrouching && (
+              <g stroke="#22d3ee" strokeWidth="1.5" fill="none" opacity="0.85">
+                <path d={`M ${-crosshairGap - 4} ${-crosshairGap + 2} L ${-crosshairGap - 4} ${-crosshairGap - 4} L ${-crosshairGap + 2} ${-crosshairGap - 4}`} />
+                <path d={`M ${crosshairGap - 2} ${-crosshairGap - 4} L ${crosshairGap + 4} ${-crosshairGap - 4} L ${crosshairGap + 4} ${-crosshairGap + 2}`} />
+                <path d={`M ${-crosshairGap - 4} ${crosshairGap - 2} L ${-crosshairGap - 4} ${crosshairGap + 4} L ${-crosshairGap + 2} ${crosshairGap + 4}`} />
+                <path d={`M ${crosshairGap - 2} ${crosshairGap + 4} L ${crosshairGap + 4} ${crosshairGap + 4} L ${crosshairGap + 4} ${crosshairGap - 2}`} />
+              </g>
+            )}
+          </svg>
+
+          {/* Top Blade */}
           <div
-            className="absolute w-0.5 h-3 bg-white/90 -translate-x-1/2 rounded-full transition-all duration-75"
-            style={{ bottom: `${crosshairGap}px` }}
+            className={`absolute w-0.5 -translate-x-1/2 rounded-full ${bladeColorClass}`}
+            style={{
+              bottom: `${crosshairGap}px`,
+              height: `${bladeLength}px`,
+            }}
           />
-          {/* Bottom Line */}
+          {/* Bottom Blade */}
           <div
-            className="absolute w-0.5 h-3 bg-white/90 -translate-x-1/2 rounded-full transition-all duration-75"
-            style={{ top: `${crosshairGap}px` }}
+            className={`absolute w-0.5 -translate-x-1/2 rounded-full ${bladeColorClass}`}
+            style={{
+              top: `${crosshairGap}px`,
+              height: `${bladeLength}px`,
+            }}
           />
-          {/* Left Line */}
+          {/* Left Blade */}
           <div
-            className="absolute h-0.5 w-3 bg-white/90 -translate-y-1/2 rounded-full transition-all duration-75"
-            style={{ right: `${crosshairGap}px` }}
+            className={`absolute h-0.5 -translate-y-1/2 rounded-full ${bladeColorClass}`}
+            style={{
+              right: `${crosshairGap}px`,
+              width: `${bladeLength}px`,
+            }}
           />
-          {/* Right Line */}
+          {/* Right Blade */}
           <div
-            className="absolute h-0.5 w-3 bg-white/90 -translate-y-1/2 rounded-full transition-all duration-75"
-            style={{ left: `${crosshairGap}px` }}
+            className={`absolute h-0.5 -translate-y-1/2 rounded-full ${bladeColorClass}`}
+            style={{
+              left: `${crosshairGap}px`,
+              width: `${bladeLength}px`,
+            }}
           />
-          {/* Center Precision Dot */}
-          <div className="w-1 h-1 bg-cyan-400 rounded-full -translate-x-1/2 -translate-y-1/2" />
+          {/* Center 1-MOA Precision Dot */}
+          <div
+            className={`w-1.5 h-1.5 rounded-full -translate-x-1/2 -translate-y-1/2 border border-black/70 ${
+              isHighBloom ? 'bg-amber-400' : 'bg-cyan-400'
+            }`}
+          />
         </div>
       )}
 
@@ -374,25 +473,268 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             {stats.currentWeaponIndex === 0 ? '5.56x45MM NATO // AUTO' : '9x19MM PARABELLUM // SEMI'}
           </div>
 
-          {/* Main Ammo Counter with tabular-nums */}
-          <div className="flex items-baseline justify-end gap-2 font-mono">
-            {stats.isReloading ? (
-              <span className="font-tactical text-2xl font-bold text-amber-400 tracking-wider">RELOADING...</span>
-            ) : (
-              <>
-                <span
-                  className={`font-tactical font-black text-4xl tabular-nums ${
-                    stats.currentMag <= 5 ? 'text-red-500' : 'text-slate-100'
-                  }`}
-                >
-                  {stats.currentMag}
-                </span>
-                <span className="text-xl text-slate-400 font-bold tabular-nums">/ {stats.reserveAmmo}</span>
-              </>
-            )}
+          {/* Live Ballistic Stability & Crosshair Spread Telemetry */}
+          <div className="my-2 pt-1.5 border-t border-slate-800/70">
+            <div className="flex items-center justify-between text-[10px] font-mono gap-4 mb-1">
+              <span className="text-slate-400 uppercase">{stabilityLabel}</span>
+              <span
+                className={`font-bold tabular-nums ${
+                  accuracyPct >= 88
+                    ? 'text-cyan-300'
+                    : accuracyPct >= 65
+                    ? 'text-emerald-400'
+                    : 'text-amber-400'
+                }`}
+              >
+                ACC {accuracyPct}% · {crosshairGap}PX
+              </span>
+            </div>
+            <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full transition-all duration-75 ${
+                  accuracyPct >= 88
+                    ? 'bg-cyan-400'
+                    : accuracyPct >= 65
+                    ? 'bg-emerald-400'
+                    : 'bg-amber-400'
+                }`}
+                style={{ width: `${accuracyPct}%` }}
+              />
+            </div>
           </div>
 
-          {/* Tactical Equipment (Flashbangs, Frag Grenades, Inspect & Stance) */}
+          {/* ACTIVE MAGAZINE CUTAWAY, NUMERICAL COUNTER & RESERVE MAGAZINE RACK */}
+          <div
+            data-testid="magazine-telemetry"
+            data-current-mag={magTelemetry.currentMag}
+            data-reserve-mags={magTelemetry.totalReserveMags}
+            data-full-mags={magTelemetry.fullReserveMags}
+            data-partial-rounds={magTelemetry.partialReserveRounds}
+            className="mt-2 pt-2 border-t border-slate-800/80"
+          >
+            <div className="flex items-center justify-between gap-4">
+              {/* Left: Visual Reserve Magazine Pouch Rack (6 Discrete Magazine Slots) */}
+              <div className="flex flex-col items-start">
+                <div className="text-[9px] font-mono text-slate-400 tracking-wider uppercase mb-1 flex items-center gap-1.5">
+                  <span>
+                    MAGS // {magTelemetry.fullReserveMags} FULL
+                    {magTelemetry.partialReserveRounds > 0
+                      ? ` + 1 PARTIAL (${magTelemetry.partialReserveRounds})`
+                      : ''}
+                  </span>
+                  <span className="text-cyan-400 font-bold tabular-nums">
+                    [{magTelemetry.totalReserveMags}/{magTelemetry.maxReserveSlots}]
+                  </span>
+                </div>
+
+                <div className="flex items-end gap-1.5" role="list" aria-label="Remaining reserve magazines">
+                  {magTelemetry.reserveMagSlots.map((slot) => {
+                    const fillHeight = Math.round(slot.fillRatio * 18);
+                    const fillY = 23 - fillHeight;
+                    const slotFillHex =
+                      slot.status === 'full'
+                        ? '#06b6d4'
+                        : slot.status === 'partial'
+                        ? '#f59e0b'
+                        : '#1e293b';
+                    const slotStrokeHex =
+                      slot.status === 'full'
+                        ? '#22d3ee'
+                        : slot.status === 'partial'
+                        ? '#fbbf24'
+                        : '#334155';
+
+                    return (
+                      <div
+                        key={slot.index}
+                        role="listitem"
+                        data-testid={`reserve-mag-slot-${slot.index}`}
+                        data-status={slot.status}
+                        data-rounds={slot.rounds}
+                        className={`flex flex-col items-center transition-all duration-150 ${
+                          slot.status === 'depleted' ? 'opacity-35' : 'opacity-100'
+                        }`}
+                        title={`Reserve Mag #${slot.index + 1}: ${slot.rounds}/${slot.capacity} rounds (${slot.status.toUpperCase()})`}
+                      >
+                        <svg viewBox="0 0 18 28" className="w-4 h-6 overflow-visible">
+                          {/* Magazine feed lips */}
+                          <rect
+                            x="4"
+                            y="1"
+                            width="10"
+                            height="3"
+                            rx="0.5"
+                            fill="#0f172a"
+                            stroke={slotStrokeHex}
+                            strokeWidth="1"
+                          />
+                          {/* Outer polymer magazine housing */}
+                          <rect
+                            x="2.5"
+                            y="4"
+                            width="13"
+                            height="20"
+                            rx="1.5"
+                            fill="#090d16"
+                            stroke={slotStrokeHex}
+                            strokeWidth="1.2"
+                          />
+                          {/* Dynamic internal round fill level */}
+                          {slot.rounds > 0 && (
+                            <rect
+                              x="4.2"
+                              y={fillY}
+                              width="9.6"
+                              height={fillHeight}
+                              rx="0.8"
+                              fill={slotFillHex}
+                            />
+                          )}
+                          {/* Cartridge window rib lines */}
+                          <line x1="4.5" y1="9" x2="13.5" y2="9" stroke="#090d16" strokeWidth="0.8" opacity="0.65" />
+                          <line x1="4.5" y1="14" x2="13.5" y2="14" stroke="#090d16" strokeWidth="0.8" opacity="0.65" />
+                          <line x1="4.5" y1="19" x2="13.5" y2="19" stroke="#090d16" strokeWidth="0.8" opacity="0.65" />
+                          {/* Baseplate bumper */}
+                          <rect x="1.5" y="24" width="15" height="2.5" rx="0.8" fill={slotStrokeHex} />
+                        </svg>
+                        <span
+                          className={`text-[9px] font-mono tabular-nums mt-0.5 leading-none ${
+                            slot.status === 'full'
+                              ? 'text-cyan-300 font-semibold'
+                              : slot.status === 'partial'
+                              ? 'text-amber-300 font-bold'
+                              : 'text-slate-600'
+                          }`}
+                        >
+                          {slot.rounds}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Right: Active Inserted Magazine Cutaway SVG + Main Numerical Counter */}
+              <div className="flex items-center gap-2.5">
+                {/* Active Inserted Magazine Cutaway SVG */}
+                <div
+                  className="relative flex flex-col items-center"
+                  title={`Active Magazine: ${magTelemetry.currentMag}/${magTelemetry.magazineSize} rounds`}
+                >
+                  <svg viewBox="0 0 26 44" className="w-6 h-10 overflow-visible">
+                    {/* Feed lips */}
+                    <rect
+                      x="5"
+                      y="1"
+                      width="16"
+                      height="4"
+                      rx="1"
+                      fill="#0f172a"
+                      stroke={activeMagColorHex}
+                      strokeWidth="1.2"
+                    />
+                    {/* Magazine body */}
+                    <rect
+                      x="3"
+                      y="5"
+                      width="20"
+                      height="33"
+                      rx="2"
+                      fill="#090d16"
+                      stroke={activeMagColorHex}
+                      strokeWidth="1.5"
+                    />
+                    {/* Real-time vertical cartridge fill bar */}
+                    {activeMagVisualRatio > 0 && (
+                      <rect
+                        x="5.5"
+                        y={36 - Math.round(activeMagVisualRatio * 29)}
+                        width="15"
+                        height={Math.round(activeMagVisualRatio * 29)}
+                        rx="1"
+                        fill={activeMagColorHex}
+                      />
+                    )}
+                    {/* Brass cartridge window ribs */}
+                    {[11, 16, 21, 26, 31].map((y) => (
+                      <line
+                        key={y}
+                        x1="5.5"
+                        y1={y}
+                        x2="20.5"
+                        y2={y}
+                        stroke="#090d16"
+                        strokeWidth="1.1"
+                        opacity="0.7"
+                      />
+                    ))}
+                    {/* Flared PMAG baseplate */}
+                    <rect x="1.5" y="38" width="23" height="4" rx="1" fill={activeMagColorHex} />
+                  </svg>
+                </div>
+
+                {/* Numerical Active Mag & Reserve Counter */}
+                <div className="text-right">
+                  {stats.isReloading ? (
+                    <div className="flex flex-col items-end">
+                      <span className="font-tactical text-lg font-bold text-amber-400 tracking-wider animate-pulse">
+                        RELOADING {Math.round((stats.reloadProgress ?? 0) * 100)}%
+                      </span>
+                      <span className="text-xs font-mono text-slate-400 tabular-nums">
+                        {stats.currentMag} / {stats.reserveAmmo} RDS
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-baseline justify-end gap-1.5 font-mono">
+                      <span
+                        className={`font-tactical font-black text-4xl tabular-nums leading-none ${
+                          stats.currentMag <= 5
+                            ? 'text-red-500'
+                            : stats.currentMag <= 10
+                            ? 'text-amber-400'
+                            : 'text-slate-100'
+                        }`}
+                      >
+                        {stats.currentMag}
+                      </span>
+                      <span className="text-lg text-slate-400 font-bold tabular-nums">
+                        / {stats.reserveAmmo}
+                      </span>
+                    </div>
+                  )}
+                  <div className="text-[9px] font-mono text-slate-400 uppercase tracking-wider mt-0.5">
+                    ACTIVE MAG: {Math.round(magTelemetry.activeMagFillRatio * 100)}% CAPACITY
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Round-by-Round Cartridge Pips Strip for Active Magazine */}
+            <div
+              className="flex items-center gap-[2px] w-full mt-2"
+              aria-label={`Active magazine rounds: ${magTelemetry.currentMag} of ${magTelemetry.magazineSize}`}
+            >
+              {Array.from({ length: magTelemetry.magazineSize }).map((_, idx) => {
+                const isLoaded = idx < magTelemetry.currentMag;
+                return (
+                  <div
+                    key={idx}
+                    className={`h-1.5 flex-1 rounded-[1px] transition-colors duration-75 ${
+                      !isLoaded
+                        ? 'bg-slate-800/80'
+                        : magTelemetry.activeMagStatus === 'critical'
+                        ? 'bg-red-500'
+                        : magTelemetry.activeMagStatus === 'low'
+                        ? 'bg-amber-400'
+                        : 'bg-cyan-400'
+                    }`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Tactical Equipment (Flashbangs, Frag Grenades, Reload, Stance, Fire & Inspect) */}
           <div className="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-slate-800/80 text-xs font-mono pointer-events-auto">
             <button
               onClick={onThrowFlashbang}
@@ -414,9 +756,38 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <Bomb className="w-3.5 h-3.5 text-amber-400" />
               <span>[G] FRAG x{stats.grenades}</span>
             </button>
-            <div className="text-slate-400">
+            <button
+              onClick={onReloadWeapon}
+              className={`flex items-center gap-1 transition-colors cursor-pointer ${
+                stats.isReloading
+                  ? 'text-amber-400 font-bold'
+                  : stats.currentMag < magTelemetry.magazineSize && stats.reserveAmmo > 0
+                  ? 'text-emerald-300 hover:text-white'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Reload Active Magazine [R]"
+            >
+              <RotateCw className={`w-3 h-3 ${stats.isReloading ? 'animate-spin' : ''}`} />
+              <span>[R] RELOAD</span>
+            </button>
+            <button
+              onClick={onToggleCrouch}
+              className={`transition-colors cursor-pointer ${
+                stats.isCrouching ? 'text-cyan-300 font-bold' : 'text-slate-300 hover:text-white'
+              }`}
+              title="Toggle Crouch Stance [C]"
+            >
               <span>[C] {stats.isCrouching ? 'CROUCH' : 'STAND'}</span>
-            </div>
+            </button>
+            {onTriggerShot && (
+              <button
+                onClick={onTriggerShot}
+                className="text-amber-300 hover:text-white transition-colors cursor-pointer"
+                title="Fire Weapon Burst [J / Click]"
+              >
+                <span>[J] FIRE</span>
+              </button>
+            )}
             <button
               onClick={onInspectWeapon}
               className={`flex items-center gap-1 transition-colors cursor-pointer ${

@@ -833,6 +833,15 @@ export default function App() {
         }
       }
 
+      // J key shortcut in-game to fire weapon burst (even without pointer lock) and trigger recoil bloom
+      if (e.code === 'KeyJ' && gameState === 'playing') {
+        const ctrl = engineRef.current?.fpsController;
+        if (ctrl) {
+          ctrl.attemptShoot(handleBulletFired, true);
+          setPlayerStats({ ...ctrl.stats });
+        }
+      }
+
       // V key shortcut to cycle dynamic skybox atmosphere preset
       if (e.code === 'KeyV' && (gameState === 'playing' || gameState === 'menu' || gameState === 'briefing' || gameState === 'paused')) {
         const engine = engineRef.current;
@@ -990,6 +999,30 @@ export default function App() {
     setPlayerStats({ ...ctrl.stats });
   };
 
+  // Toggle crouch stance ('C' key or HUD button)
+  const handleToggleCrouch = () => {
+    const ctrl = engineRef.current?.fpsController;
+    if (!ctrl) return;
+    ctrl.stats.isCrouching = !ctrl.stats.isCrouching;
+    setPlayerStats({ ...ctrl.stats });
+  };
+
+  // Fire weapon burst ('J' key or HUD button)
+  const handleTriggerShot = () => {
+    const ctrl = engineRef.current?.fpsController;
+    if (!ctrl) return;
+    ctrl.attemptShoot(handleBulletFired, true);
+    setPlayerStats({ ...ctrl.stats });
+  };
+
+  // Reload active weapon ('R' key or HUD button)
+  const handleReloadWeapon = () => {
+    const ctrl = engineRef.current?.fpsController;
+    if (!ctrl) return;
+    ctrl.startReload();
+    setPlayerStats({ ...ctrl.stats });
+  };
+
   // Apply Gunsmith Camo (and trigger inspect preview if in active gameplay)
   const handleSelectCamo = (camoId: string) => {
     setSelectedCamoId(camoId);
@@ -1088,6 +1121,9 @@ export default function App() {
           onThrowFrag={handleThrowFrag}
           onInspectWeapon={handleInspectWeapon}
           onSelectCamo={handleSelectCamo}
+          onToggleCrouch={handleToggleCrouch}
+          onTriggerShot={handleTriggerShot}
+          onReloadWeapon={handleReloadWeapon}
         />
       )}
 

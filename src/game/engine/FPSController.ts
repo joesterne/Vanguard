@@ -7,6 +7,11 @@ import {
   computeInspectKinematics,
   DEFAULT_INSPECT_DURATION,
 } from './inspectKinematics';
+import {
+  computeDynamicCrosshairState,
+  addShotRecoilBloom,
+  decayRecoilBloom,
+} from './crosshairSpread';
 
 export class FPSController {
   public camera: THREE.PerspectiveCamera;
@@ -53,9 +58,12 @@ export class FPSController {
   private inspectOffset = new THREE.Vector3();
   private inspectRot = new THREE.Vector3();
 
-  // Fire timing
+  // Fire timing & Dynamic Crosshair / Recoil Bloom state
   private lastShotTime: number = 0;
   private reloadTimer: number = 0;
+  private reloadStartTime: number = 0;
+  public recoilBloom: number = 0;
+  public currentCrosshairGap: number = 11;
 
   // Pre-allocated vectors to prevent GC allocations
   private _moveDir = new THREE.Vector3();
@@ -75,7 +83,10 @@ export class FPSController {
       maxStamina: 100,
       currentWeaponIndex: 0,
       currentMag: INITIAL_WEAPONS[0].magazineSize,
+      magazineSize: INITIAL_WEAPONS[0].magazineSize,
       reserveAmmo: INITIAL_WEAPONS[0].reserveAmmo,
+      maxReserveAmmo: INITIAL_WEAPONS[0].reserveAmmo,
+      reloadProgress: 0,
       grenades: 2,
       flashbangs: 3,
       score: 0,
@@ -91,6 +102,12 @@ export class FPSController {
       isInspecting: false,
       inspectProgress: 0,
       inspectPhaseLabel: 'LEFT RECEIVER · SERIAL UID & SKIN FINISH',
+      crosshairSpread: 11,
+      recoilBloom: 0,
+      movementSpeed: 0,
+      isGrounded: true,
+      accuracyPct: 85,
+      stabilityLabel: 'STANDING · STEADY',
     };
 
     // Attach weapon rig group directly as child of camera
@@ -243,7 +260,10 @@ export class FPSController {
     this.stats.currentWeaponIndex = index;
     const def = this.weapons[index];
     this.stats.currentMag = def.magazineSize;
+    this.stats.magazineSize = def.magazineSize;
     this.stats.reserveAmmo = def.reserveAmmo;
+    this.stats.maxReserveAmmo = def.reserveAmmo;
+    this.stats.reloadProgress = 0;
 
     // Replace 3D mesh rig
     this.weaponRigGroup.remove(this.currentRig.group);
@@ -288,15 +308,20 @@ export class FPSController {
     this.cancelInspect();
 
     this.stats.isReloading = true;
+    this.stats.reloadProgress = 0;
     this.reloadTimer = currentDef.reloadTime;
+    this.reloadStartTime = performance.now();
     soundEngine.playReload();
   }
 
   /**
    * Shoot active weapon
    */
-  public attemptShoot(onBulletFired: (origin: THREE.Vector3, direction: THREE.Vector3, weapon: WeaponDef) => void) {
-    if (!this.isPointerLocked) return;
+  public attemptShoot(
+    onBulletFired: (origin: THREE.Vector3, direction: THREE.Vector3, weapon: WeaponDef) => void,
+    ignorePointerLock: boolean = false
+  ) {
+    if (!this.isPointerLocked && !ignorePointerLock) return;
     if (this.stats.isReloading) return;
 
     const currentDef = this.weapons[this.activeWeaponIndex];
@@ -312,6 +337,8 @@ export class FPSController {
       return;
     }
 
+    this.cancelInspect();
+
     // Spend round
     this.stats.currentMag--;
     this.stats.shotsFired++;
@@ -324,11 +351,39 @@ export class FPSController {
       soundEngine.playPistolFire({ isPlayer: true, origin: this.position });
     }
 
-    // Recoil impulse
+    // Recoil impulse on weapon rig & camera
     this.weaponRecoilOffset.z += 0.045; // kickback
     this.weaponRecoilRot.x += currentDef.recoilVertical;
     this.weaponRecoilRot.y += (Math.random() - 0.5) * currentDef.recoilHorizontal;
     this.cameraRecoilPitch += currentDef.recoilVertical * 0.45;
+
+    // Dynamic Recoil Bloom accumulation & instant crosshair expansion kick
+    this.recoilBloom = addShotRecoilBloom(
+      this.recoilBloom,
+      currentDef.recoilVertical,
+      this.stats.isCrouching,
+      this.stats.isAiming
+    );
+
+    const horizontalSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+    const dynamicSpreadState = computeDynamicCrosshairState({
+      baseSpread: currentDef.spread,
+      adsSpread: currentDef.adsSpread,
+      horizontalSpeed,
+      verticalSpeed: this.velocity.y,
+      isGrounded: this.isGrounded,
+      isCrouching: this.stats.isCrouching,
+      isSprinting: this.stats.isSprinting,
+      isAiming: this.stats.isAiming,
+      isReloading: this.stats.isReloading,
+      recoilBloom: this.recoilBloom,
+    });
+
+    this.currentCrosshairGap = Math.min(52, Math.max(this.currentCrosshairGap + 4.5, dynamicSpreadState.targetGapPx));
+    this.stats.crosshairSpread = Number(this.currentCrosshairGap.toFixed(2));
+    this.stats.recoilBloom = dynamicSpreadState.recoilBloom;
+    this.stats.accuracyPct = dynamicSpreadState.accuracyPct;
+    this.stats.stabilityLabel = dynamicSpreadState.stabilityLabel;
 
     // Muzzle flash visibility trigger
     if (this.currentRig.muzzleFlashMesh && this.currentRig.muzzleLight) {
@@ -343,8 +398,8 @@ export class FPSController {
       }, 45);
     }
 
-    // Direction with spread bloom
-    const spread = this.stats.isAiming ? currentDef.adsSpread : (this.stats.isCrouching ? currentDef.spread * 0.5 : currentDef.spread);
+    // Direction with live dynamic spread bloom (movement + stance + recoil)
+    const spread = dynamicSpreadState.effectiveSpreadRad;
     const dir = new THREE.Vector3(0, 0, -1);
     dir.x += (Math.random() - 0.5) * spread;
     dir.y += (Math.random() - 0.5) * spread;
@@ -384,12 +439,17 @@ export class FPSController {
       this.attemptShoot(onBulletFired);
     }
 
-    // 2. Reload progress
+    // 2. Reload progress (synchronized with wall-clock elapsed time)
     if (this.stats.isReloading) {
-      this.reloadTimer -= delta;
+      const currentDef = this.weapons[this.activeWeaponIndex];
+      const wallElapsed = (performance.now() - this.reloadStartTime) / 1000;
+      this.reloadTimer = Math.min(this.reloadTimer - delta, currentDef.reloadTime - wallElapsed);
+      const progress = Math.max(0, Math.min(1, 1 - this.reloadTimer / currentDef.reloadTime));
+      this.stats.reloadProgress = Number(progress.toFixed(3));
+
       if (this.reloadTimer <= 0) {
         this.stats.isReloading = false;
-        const currentDef = this.weapons[this.activeWeaponIndex];
+        this.stats.reloadProgress = 0;
         const needed = currentDef.magazineSize - this.stats.currentMag;
         const taken = Math.min(needed, this.stats.reserveAmmo);
         this.stats.currentMag += taken;
@@ -475,6 +535,36 @@ export class FPSController {
     // World play area boundary clamp
     this.position.x = Math.max(-55, Math.min(55, this.position.x));
     this.position.z = Math.max(-55, Math.min(55, this.position.z));
+
+    // 3b. Dynamic Crosshair Spread & Recoil Bloom update
+    this.recoilBloom = decayRecoilBloom(this.recoilBloom, delta, this.stats.isCrouching);
+    const currentDef = this.weapons[this.activeWeaponIndex];
+    const horizontalSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+    const chState = computeDynamicCrosshairState({
+      baseSpread: currentDef.spread,
+      adsSpread: currentDef.adsSpread,
+      horizontalSpeed,
+      verticalSpeed: this.velocity.y,
+      isGrounded: this.isGrounded,
+      isCrouching: this.stats.isCrouching,
+      isSprinting: this.stats.isSprinting,
+      isAiming: this.stats.isAiming,
+      isReloading: this.stats.isReloading,
+      recoilBloom: this.recoilBloom,
+    });
+
+    this.currentCrosshairGap = THREE.MathUtils.damp(
+      this.currentCrosshairGap,
+      chState.targetGapPx,
+      16,
+      delta
+    );
+    this.stats.crosshairSpread = Number(this.currentCrosshairGap.toFixed(2));
+    this.stats.recoilBloom = chState.recoilBloom;
+    this.stats.movementSpeed = Number(horizontalSpeed.toFixed(2));
+    this.stats.isGrounded = this.isGrounded;
+    this.stats.accuracyPct = chState.accuracyPct;
+    this.stats.stabilityLabel = chState.stabilityLabel;
 
     // 4. Update Camera Orientation & Recoil Recovery
     this.cameraRecoilPitch = THREE.MathUtils.damp(this.cameraRecoilPitch, 0, 8, delta);

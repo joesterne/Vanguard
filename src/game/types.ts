@@ -40,7 +40,10 @@ export interface PlayerStats {
   maxStamina: number;
   currentWeaponIndex: number;
   currentMag: number;
+  magazineSize?: number;
   reserveAmmo: number;
+  maxReserveAmmo?: number;
+  reloadProgress?: number;
   grenades: number;
   flashbangs: number;
   score: number;
@@ -56,6 +59,12 @@ export interface PlayerStats {
   isInspecting: boolean;
   inspectProgress?: number;
   inspectPhaseLabel?: string;
+  crosshairSpread?: number;
+  recoilBloom?: number;
+  movementSpeed?: number;
+  isGrounded?: boolean;
+  accuracyPct?: number;
+  stabilityLabel?: string;
 }
 
 export interface DestructibleObject {
