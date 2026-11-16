@@ -8,6 +8,12 @@ import { PhysicsAndDestructionManager } from './game/engine/PhysicsAndDestructio
 import { EnemyAIManager } from './game/engine/AIEnemies';
 import { soundEngine, AcousticState } from './game/audio/SoundEngine';
 import { CAMO_VARIANTS } from './game/data/gunsmithData';
+import {
+  IncomingDamageEvent,
+  ComputedDamageArc,
+  createDamageIndicatorEvent,
+  stepActiveDamageIndicators,
+} from './game/engine/damageIndicator';
 
 // UI Modals & Overlays
 import { TitleScreen } from './game/components/TitleScreen';
@@ -77,6 +83,9 @@ export default function App() {
   const [userCredits, setUserCredits] = useState(1200);
   const [hitmarkers, setHitmarkers] = useState<HitMarkerEvent[]>([]);
   const [lastDamagedTime, setLastDamagedTime] = useState(0);
+  const [damageArcs, setDamageArcs] = useState<ComputedDamageArc[]>([]);
+  const damageEventsRef = useRef<IncomingDamageEvent[]>([]);
+  const simulatedHitIndexRef = useRef<number>(0);
   const [cameraYaw, setCameraYaw] = useState(0);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [enemyCount, setEnemyCount] = useState(0);
@@ -144,6 +153,24 @@ export default function App() {
       setHitmarkers((prev) => prev.filter((hm) => hm.id !== id));
     }, 180);
   }, []);
+
+  // Register directional incoming fire / blast damage for the HUD Damage Indicator Widget
+  const registerIncomingDamage = useCallback(
+    (sourcePos: { x: number; z: number }, damage: number, attackerLabel: string = 'HOSTILE FIRE') => {
+      const now = performance.now();
+      const ev = createDamageIndicatorEvent(sourcePos, damage, now, attackerLabel);
+      damageEventsRef.current = [...damageEventsRef.current.slice(-5), ev];
+      setLastDamagedTime(now);
+
+      const ctrl = engineRef.current?.fpsController;
+      const pPos = ctrl ? { x: ctrl.position.x, z: ctrl.position.z } : { x: 0, z: 18 };
+      const yaw = ctrl ? ctrl.yaw : 0;
+      const stepped = stepActiveDamageIndicators(damageEventsRef.current, pPos, yaw, now);
+      damageEventsRef.current = stepped.activeEvents;
+      setDamageArcs(stepped.arcs);
+    },
+    []
+  );
 
   // Initiate cinematic death camera panning to the killer
   const initiateDeathCam = useCallback((enemy: EnemyActor | null, playerPos: THREE.Vector3, shotOrigin: THREE.Vector3) => {
@@ -321,7 +348,7 @@ export default function App() {
             if (playerDist < radius) {
               const pDmg = maxDamage * (1 - playerDist / radius) * 0.7;
               engine.fpsController.takeDamage(pDmg);
-              setLastDamagedTime(performance.now());
+              registerIncomingDamage({ x: center.x, z: center.z }, pDmg, 'EXPLOSIVE BARREL');
             }
           });
 
@@ -553,6 +580,18 @@ export default function App() {
             setAcousticState(soundEngine.getAcousticState());
           }
 
+          // Step directional incoming damage indicator arcs (real-time fade & yaw sync)
+          if (damageEventsRef.current.length > 0) {
+            const steppedDmg = stepActiveDamageIndicators(
+              damageEventsRef.current,
+              { x: ctrl.position.x, z: ctrl.position.z },
+              ctrl.yaw,
+              currentTimestamp
+            );
+            damageEventsRef.current = steppedDmg.activeEvents;
+            setDamageArcs(steppedDmg.arcs);
+          }
+
           // Enemy AI update & enemy fire with geometric acoustic occlusion & reflections
           em.update(delta, ctrl.position, (enemy, origin, dir, dmg) => {
             soundEngine.playRifleFire({ isPlayer: false, origin });
@@ -561,16 +600,22 @@ export default function App() {
             const dist = toPlayer.length();
             toPlayer.normalize();
 
-            // Near-miss or direct hit
+            const attackerLabel =
+              enemy.type === 'drone' ? 'RECON DRONE FIRE' : 'SENTRY RIFLE FIRE';
+
+            // Direct hit or close suppressive fire
             if (dir.dot(toPlayer) > 0.94 && dist < 40) {
               ctrl.takeDamage(dmg);
-              setLastDamagedTime(performance.now());
+              registerIncomingDamage({ x: origin.x, z: origin.z }, dmg, attackerLabel);
 
               // Trigger death camera when lethal damage is dealt
               if (ctrl.stats.health <= 0 && gameState === 'playing' && !deathCamRef.current.active) {
                 initiateDeathCam(enemy, ctrl.position.clone(), origin);
               }
             } else {
+              if (dir.dot(toPlayer) > 0.84 && dist < 42) {
+                registerIncomingDamage({ x: origin.x, z: origin.z }, dmg * 0.55, attackerLabel);
+              }
               soundEngine.playRicochet(origin);
             }
           });
@@ -764,10 +809,111 @@ export default function App() {
       if (playerDist < blastRadius) {
         const pDmg = maxDamage * (1 - playerDist / blastRadius) * 0.65;
         ctrl.takeDamage(pDmg);
-        setLastDamagedTime(performance.now());
+        registerIncomingDamage({ x: blastCenter.x, z: blastCenter.z }, pDmg, 'FRAG BLAST');
       }
     });
+  }, [triggerHitmarker, registerIncomingDamage]);
+
+  // Trigger CQB Buttstock Melee Strike ('E' key or HUD button) with close-range impact detection
+  const handleMeleeStrike = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const { fpsController: ctrl, enemyManager: em, physicsManager: pm, camera } = engine;
+
+    // Check if any enemy is within CQB melee range (3.2m) in front of the player
+    const camDir = camera.getWorldDirection(new THREE.Vector3());
+    let hitEnemy: EnemyActor | null = null;
+    for (const enemy of em.enemies) {
+      if (enemy.state !== 'dead') {
+        const toEnemy = enemy.mesh.position.clone().sub(ctrl.position);
+        const dist = toEnemy.length();
+        if (dist <= 3.2) {
+          toEnemy.normalize();
+          if (camDir.dot(toEnemy) > 0.45) {
+            hitEnemy = enemy;
+            break;
+          }
+        }
+      }
+    }
+
+    const triggered = ctrl.startMelee(Boolean(hitEnemy));
+    if (triggered && hitEnemy) {
+      const { isKill } = em.damageEnemy(hitEnemy, 70, false);
+      triggerHitmarker(false, isKill);
+      pm.spawnImpactSparks(hitEnemy.mesh.position.clone().add(new THREE.Vector3(0, 1.2, 0)));
+      if (isKill) {
+        ctrl.stats.kills++;
+        ctrl.stats.score += 175;
+      }
+    }
+    setPlayerStats({ ...ctrl.stats });
   }, [triggerHitmarker]);
+
+  // Trigger Operator Jump Impulse ('Space' key or HUD button)
+  const handleJump = useCallback(() => {
+    const ctrl = engineRef.current?.fpsController;
+    if (!ctrl) return;
+    ctrl.triggerJump();
+    setPlayerStats({ ...ctrl.stats });
+  }, []);
+
+  // Rotate camera yaw by degrees (for HUD compass controls & Q / [ / ] hotkeys)
+  const handleRotateYaw = useCallback((deltaDeg: number) => {
+    const ctrl = engineRef.current?.fpsController;
+    if (!ctrl) return;
+    ctrl.rotateYawByDegrees(deltaDeg);
+    setCameraYaw(ctrl.yaw);
+    setPlayerStats({ ...ctrl.stats });
+
+    if (damageEventsRef.current.length > 0) {
+      const stepped = stepActiveDamageIndicators(
+        damageEventsRef.current,
+        { x: ctrl.position.x, z: ctrl.position.z },
+        ctrl.yaw,
+        performance.now()
+      );
+      damageEventsRef.current = stepped.activeEvents;
+      setDamageArcs(stepped.arcs);
+    }
+  }, []);
+
+  // Simulate or trigger directional incoming enemy fire ('H' key or HUD button)
+  const handleSimulateIncomingFire = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const { fpsController: ctrl, enemyManager: em } = engine;
+
+    const liveEnemies = em.enemies.filter((e) => e.state !== 'dead');
+    let sourcePos = { x: 14, z: 18 };
+    let label = 'SENTRY RIFLE FIRE';
+
+    if (liveEnemies.length > 0) {
+      const chosen = liveEnemies[simulatedHitIndexRef.current % liveEnemies.length];
+      simulatedHitIndexRef.current += 1;
+      sourcePos = { x: chosen.mesh.position.x, z: chosen.mesh.position.z };
+      label = chosen.type === 'drone' ? 'RECON DRONE FIRE' : 'SENTRY RIFLE FIRE';
+    } else {
+      const fallbackOffsets = [
+        { dx: 18, dz: -6, label: 'EAST FLANK SENTRY' },
+        { dx: 0, dz: -24, label: 'NORTH BUNKER SENTRY' },
+        { dx: -18, dz: 0, label: 'WEST CONTAINER SENTRY' },
+        { dx: 0, dz: 18, label: 'REAR AMBUSH PATROL' },
+      ];
+      const pick = fallbackOffsets[simulatedHitIndexRef.current % fallbackOffsets.length];
+      simulatedHitIndexRef.current += 1;
+      sourcePos = { x: ctrl.position.x + pick.dx, z: ctrl.position.z + pick.dz };
+      label = pick.label;
+    }
+
+    soundEngine.playRifleFire({
+      isPlayer: false,
+      origin: { x: sourcePos.x, y: 1.5, z: sourcePos.z },
+    });
+    ctrl.takeDamage(12);
+    setPlayerStats({ ...ctrl.stats });
+    registerIncomingDamage(sourcePos, 18, label);
+  }, [registerIncomingDamage]);
 
   // Esc key pause & tactical hotkeys handling
   useEffect(() => {
@@ -842,6 +988,27 @@ export default function App() {
         }
       }
 
+      // E key shortcut in-game to execute CQB Melee Strike and update stamina/exhaustion HUD
+      if (e.code === 'KeyE' && gameState === 'playing') {
+        handleMeleeStrike();
+      }
+
+      // Q / [ / ] shortcuts in-game to rotate camera yaw and test Tactical Orientation Compass
+      if (e.code === 'KeyQ' && gameState === 'playing') {
+        handleRotateYaw(45);
+      }
+      if (e.code === 'BracketLeft' && gameState === 'playing') {
+        handleRotateYaw(-22.5);
+      }
+      if (e.code === 'BracketRight' && gameState === 'playing') {
+        handleRotateYaw(22.5);
+      }
+
+      // H key shortcut in-game to trigger directional incoming enemy fire for the HUD Damage Indicator Widget
+      if (e.code === 'KeyH' && gameState === 'playing') {
+        handleSimulateIncomingFire();
+      }
+
       // V key shortcut to cycle dynamic skybox atmosphere preset
       if (e.code === 'KeyV' && (gameState === 'playing' || gameState === 'menu' || gameState === 'briefing' || gameState === 'paused')) {
         const engine = engineRef.current;
@@ -855,7 +1022,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [gameState, activeModal, currentMission, selectedCamoId, handleThrowFlashbang, handleThrowFrag]);
+  }, [gameState, activeModal, currentMission, selectedCamoId, handleThrowFlashbang, handleThrowFrag, handleMeleeStrike, handleRotateYaw, handleSimulateIncomingFire]);
 
   // Open Tactical Holographic Briefing Screen before level starts
   const handleStartCampaign = () => {
@@ -1124,6 +1291,11 @@ export default function App() {
           onToggleCrouch={handleToggleCrouch}
           onTriggerShot={handleTriggerShot}
           onReloadWeapon={handleReloadWeapon}
+          onMeleeStrike={handleMeleeStrike}
+          onJump={handleJump}
+          onRotateYaw={handleRotateYaw}
+          damageArcs={damageArcs}
+          onSimulateIncomingHit={handleSimulateIncomingFire}
         />
       )}
 

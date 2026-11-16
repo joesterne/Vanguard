@@ -12,6 +12,16 @@ import {
   addShotRecoilBloom,
   decayRecoilBloom,
 } from './crosshairSpread';
+import {
+  initiateReloadState,
+  computeReloadKinematics,
+} from './tacticalReload';
+import {
+  attemptStaminaImpulse,
+  stepStaminaAndExhaustion,
+  computeMeleeKinematics,
+  DEFAULT_MELEE_DURATION_SEC,
+} from './staminaExhaustion';
 
 export class FPSController {
   public camera: THREE.PerspectiveCamera;
@@ -58,12 +68,24 @@ export class FPSController {
   private inspectOffset = new THREE.Vector3();
   private inspectRot = new THREE.Vector3();
 
-  // Fire timing & Dynamic Crosshair / Recoil Bloom state
+  // Fire timing, Tactical Reload & Dynamic Crosshair / Recoil Bloom state
   private lastShotTime: number = 0;
   private reloadTimer: number = 0;
   private reloadStartTime: number = 0;
+  private activeReloadDuration: number = 1.6;
+  private reloadOffset = new THREE.Vector3();
+  private reloadRot = new THREE.Vector3();
   public recoilBloom: number = 0;
   public currentCrosshairGap: number = 11;
+
+  // Stamina Exhaustion & CQB Melee Strike State
+  private meleeTimer: number = 0;
+  private meleeStartTime: number = 0;
+  private meleeDuration: number = DEFAULT_MELEE_DURATION_SEC;
+  private meleeOffset = new THREE.Vector3();
+  private meleeRot = new THREE.Vector3();
+  private lastStaminaImpulseTime: number = -10;
+  private lastStaminaImpulseType: 'JUMP_EXERTION' | 'MELEE_STRIKE' | null = null;
 
   // Pre-allocated vectors to prevent GC allocations
   private _moveDir = new THREE.Vector3();
@@ -96,6 +118,11 @@ export class FPSController {
       shotsHit: 0,
       timeElapsed: 0,
       isReloading: false,
+      isTacticalReload: false,
+      reloadDuration: INITIAL_WEAPONS[0].reloadTime,
+      reloadStageLabel: '',
+      lastReloadType: null,
+      lastReloadTimestamp: 0,
       isAiming: false,
       isSprinting: false,
       isCrouching: false,
@@ -108,6 +135,17 @@ export class FPSController {
       isGrounded: true,
       accuracyPct: 85,
       stabilityLabel: 'STANDING · STEADY',
+      exhaustionLevel: 'OPTIMAL',
+      exhaustionLabel: 'OPTIMAL // PEAK OUTPUT',
+      heartRateBpm: 68,
+      staminaAction: 'NONE',
+      staminaActionLabel: 'STANDBY // STEADY RESPIRATION',
+      staminaDeltaRate: 0,
+      isMeleeing: false,
+      meleeProgress: 0,
+      meleeStageLabel: '',
+      posX: 0,
+      posZ: 18,
     };
 
     // Attach weapon rig group directly as child of camera
@@ -172,6 +210,16 @@ export class FPSController {
     if (document.pointerLockElement) {
       document.exitPointerLock();
     }
+  }
+
+  /**
+   * Rotates player camera yaw by a signed degree delta (+degrees turns right/clockwise, -degrees turns left/counter-clockwise).
+   */
+  public rotateYawByDegrees(deltaDeg: number) {
+    const deltaRad = (deltaDeg * Math.PI) / 180;
+    this.yaw -= deltaRad;
+    this.weaponRecoilRot.y -= Math.sign(deltaDeg) * 0.015;
+    this.camera.rotation.set(this.pitch + this.cameraRecoilPitch, this.yaw, 0, 'YXZ');
   }
 
   private onPointerLockChange() {
@@ -245,6 +293,11 @@ export class FPSController {
     if (e.code === 'KeyC') {
       this.stats.isCrouching = !this.stats.isCrouching;
     }
+
+    // Jump impulse (Space)
+    if (e.code === 'Space') {
+      this.triggerJump();
+    }
   }
 
   private onKeyUp(e: KeyboardEvent) {
@@ -304,14 +357,111 @@ export class FPSController {
 
   public startReload() {
     const currentDef = this.weapons[this.activeWeaponIndex];
-    if (this.stats.currentMag >= currentDef.magazineSize || this.stats.reserveAmmo <= 0) return;
+    const init = initiateReloadState(
+      this.stats.currentMag,
+      currentDef.magazineSize,
+      this.stats.reserveAmmo,
+      currentDef.reloadTime
+    );
+    if (!init.canReload) return;
     this.cancelInspect();
 
     this.stats.isReloading = true;
+    this.stats.isTacticalReload = init.isTacticalReload;
+    this.stats.reloadDuration = init.effectiveReloadTime;
     this.stats.reloadProgress = 0;
-    this.reloadTimer = currentDef.reloadTime;
+    this.stats.reloadStageLabel = init.hudLabel;
+    this.activeReloadDuration = init.effectiveReloadTime;
+    this.reloadTimer = init.effectiveReloadTime;
     this.reloadStartTime = performance.now();
-    soundEngine.playReload();
+    soundEngine.playReload(init.isTacticalReload);
+  }
+
+  /**
+   * Triggers a Jump impulse, deducting jump stamina and updating exhaustion telemetry.
+   */
+  public triggerJump(): boolean {
+    if (!this.isGrounded) return false;
+    const jumpAttempt = attemptStaminaImpulse(this.stats.stamina, 'JUMP_EXERTION');
+    if (!jumpAttempt.allowed) {
+      return false;
+    }
+
+    this.cancelInspect();
+    this.stats.stamina = jumpAttempt.nextStamina;
+    this.stats.isCrouching = false;
+    this.velocity.y = 5.8;
+    this.isGrounded = false;
+    this.stats.isGrounded = false;
+    this.lastStaminaImpulseTime = performance.now();
+    this.lastStaminaImpulseType = 'JUMP_EXERTION';
+
+    const nextTelemetry = stepStaminaAndExhaustion({
+      currentStamina: this.stats.stamina,
+      maxStamina: this.stats.maxStamina,
+      delta: 0,
+      isSprinting: this.stats.isSprinting,
+      isCrouching: this.stats.isCrouching,
+      isGrounded: false,
+      isMeleeing: Boolean(this.stats.isMeleeing),
+      timeSinceLastImpulse: 0,
+      lastImpulseType: 'JUMP_EXERTION',
+    });
+    this.stats.exhaustionLevel = nextTelemetry.exhaustionLevel;
+    this.stats.exhaustionLabel = nextTelemetry.exhaustionLabel;
+    this.stats.heartRateBpm = nextTelemetry.heartRateBpm;
+    this.stats.staminaAction = nextTelemetry.staminaAction;
+    this.stats.staminaActionLabel = nextTelemetry.staminaActionLabel;
+    this.stats.staminaDeltaRate = nextTelemetry.staminaDeltaRate;
+
+    soundEngine.playJumpExertion();
+    return true;
+  }
+
+  /**
+   * Triggers a CQB Buttstock Melee Strike, deducting melee stamina and animating the 3D viewmodel.
+   */
+  public startMelee(hitConfirmed: boolean = false): boolean {
+    if (this.stats.isMeleeing || this.stats.isReloading) return false;
+    const meleeAttempt = attemptStaminaImpulse(this.stats.stamina, 'MELEE_STRIKE');
+    if (!meleeAttempt.allowed) {
+      return false;
+    }
+
+    this.cancelInspect();
+    this.stats.stamina = meleeAttempt.nextStamina;
+    this.stats.isMeleeing = true;
+    this.stats.meleeProgress = 0;
+    this.stats.meleeStageLabel = 'MELEE WINDUP';
+    this.meleeTimer = this.meleeDuration;
+    this.meleeStartTime = performance.now();
+    this.lastStaminaImpulseTime = performance.now();
+    this.lastStaminaImpulseType = 'MELEE_STRIKE';
+
+    // Camera & weapon recoil punch for visceral CQB strike feel
+    this.cameraRecoilPitch -= 0.035;
+    this.recoilBloom = Math.min(1.0, this.recoilBloom + 0.25);
+
+    const nextTelemetry = stepStaminaAndExhaustion({
+      currentStamina: this.stats.stamina,
+      maxStamina: this.stats.maxStamina,
+      delta: 0,
+      isSprinting: this.stats.isSprinting,
+      isCrouching: this.stats.isCrouching,
+      isGrounded: this.isGrounded,
+      isMeleeing: true,
+      timeSinceLastImpulse: 0,
+      lastImpulseType: 'MELEE_STRIKE',
+    });
+    this.stats.exhaustionLevel = nextTelemetry.exhaustionLevel;
+    this.stats.exhaustionLabel = nextTelemetry.exhaustionLabel;
+    this.stats.heartRateBpm = nextTelemetry.heartRateBpm;
+    this.stats.staminaAction = nextTelemetry.staminaAction;
+    this.stats.staminaActionLabel = nextTelemetry.staminaActionLabel;
+    this.stats.staminaDeltaRate = nextTelemetry.staminaDeltaRate;
+
+    soundEngine.playMeleeSwing(hitConfirmed);
+    return true;
   }
 
   /**
@@ -439,40 +589,111 @@ export class FPSController {
       this.attemptShoot(onBulletFired);
     }
 
-    // 2. Reload progress (synchronized with wall-clock elapsed time)
+    // 2. Reload progress & 3D Tactical vs. Full Empty-Mag Reload Kinematics
     if (this.stats.isReloading) {
       const currentDef = this.weapons[this.activeWeaponIndex];
+      const duration = this.activeReloadDuration || currentDef.reloadTime;
       const wallElapsed = (performance.now() - this.reloadStartTime) / 1000;
-      this.reloadTimer = Math.min(this.reloadTimer - delta, currentDef.reloadTime - wallElapsed);
-      const progress = Math.max(0, Math.min(1, 1 - this.reloadTimer / currentDef.reloadTime));
+      this.reloadTimer = Math.min(this.reloadTimer - delta, duration - wallElapsed);
+      const progress = Math.max(0, Math.min(1, 1 - this.reloadTimer / duration));
       this.stats.reloadProgress = Number(progress.toFixed(3));
 
+      const relKin = computeReloadKinematics(progress, Boolean(this.stats.isTacticalReload));
+      this.reloadOffset.set(relKin.offset.x, relKin.offset.y, relKin.offset.z);
+      this.reloadRot.set(relKin.rotation.x, relKin.rotation.y, relKin.rotation.z);
+      this.stats.reloadStageLabel = relKin.stageLabel;
+
       if (this.reloadTimer <= 0) {
+        const wasTactical = Boolean(this.stats.isTacticalReload);
+        this.stats.lastReloadType = wasTactical ? 'tactical' : 'empty';
+        this.stats.lastReloadTimestamp = performance.now();
         this.stats.isReloading = false;
+        this.stats.isTacticalReload = false;
         this.stats.reloadProgress = 0;
+        this.stats.reloadStageLabel = '';
         const needed = currentDef.magazineSize - this.stats.currentMag;
         const taken = Math.min(needed, this.stats.reserveAmmo);
         this.stats.currentMag += taken;
         this.stats.reserveAmmo -= taken;
       }
+    } else {
+      this.reloadOffset.x = THREE.MathUtils.damp(this.reloadOffset.x, 0, 16, delta);
+      this.reloadOffset.y = THREE.MathUtils.damp(this.reloadOffset.y, 0, 16, delta);
+      this.reloadOffset.z = THREE.MathUtils.damp(this.reloadOffset.z, 0, 16, delta);
+      this.reloadRot.x = THREE.MathUtils.damp(this.reloadRot.x, 0, 16, delta);
+      this.reloadRot.y = THREE.MathUtils.damp(this.reloadRot.y, 0, 16, delta);
+      this.reloadRot.z = THREE.MathUtils.damp(this.reloadRot.z, 0, 16, delta);
     }
 
-    // 3. Movement Calculations
+    // 2b. CQB Melee Strike 3D Viewmodel Kinematics
+    if (this.stats.isMeleeing) {
+      const wallElapsed = (performance.now() - this.meleeStartTime) / 1000;
+      this.meleeTimer = Math.min(this.meleeTimer - delta, this.meleeDuration - wallElapsed);
+      const progress = Math.max(0, Math.min(1, 1 - this.meleeTimer / this.meleeDuration));
+      this.stats.meleeProgress = Number(progress.toFixed(3));
+
+      const meleeKin = computeMeleeKinematics(progress);
+      this.meleeOffset.set(meleeKin.offset.x, meleeKin.offset.y, meleeKin.offset.z);
+      this.meleeRot.set(meleeKin.rotation.x, meleeKin.rotation.y, meleeKin.rotation.z);
+      this.stats.meleeStageLabel = meleeKin.stageLabel;
+
+      if (this.meleeTimer <= 0) {
+        this.stats.isMeleeing = false;
+        this.stats.meleeProgress = 0;
+        this.stats.meleeStageLabel = '';
+      }
+    } else {
+      this.meleeOffset.x = THREE.MathUtils.damp(this.meleeOffset.x, 0, 18, delta);
+      this.meleeOffset.y = THREE.MathUtils.damp(this.meleeOffset.y, 0, 18, delta);
+      this.meleeOffset.z = THREE.MathUtils.damp(this.meleeOffset.z, 0, 18, delta);
+      this.meleeRot.x = THREE.MathUtils.damp(this.meleeRot.x, 0, 18, delta);
+      this.meleeRot.y = THREE.MathUtils.damp(this.meleeRot.y, 0, 18, delta);
+      this.meleeRot.z = THREE.MathUtils.damp(this.meleeRot.z, 0, 18, delta);
+    }
+
+    // 3. Movement & Stamina / Physical Exhaustion Calculations
     const isShift = this.keys['ShiftLeft'] || this.keys['ShiftRight'];
-    this.stats.isSprinting = isShift && (this.keys['KeyW'] || this.keys['ArrowUp']) && !this.stats.isAiming && this.stats.stamina > 10;
+    const wantsForwardSprint =
+      isShift &&
+      (this.keys['KeyW'] || this.keys['ArrowUp'] || this.keys['KeyA'] || this.keys['KeyD']) &&
+      !this.stats.isAiming;
+    this.stats.isSprinting = wantsForwardSprint && this.stats.stamina > 8;
     if (this.stats.isSprinting && this.isInspecting) {
       this.cancelInspect();
     }
-
-    // Stamina depletion / recovery
-    if (this.stats.isSprinting) {
-      this.stats.stamina = Math.max(0, this.stats.stamina - delta * 22);
-    } else {
-      this.stats.stamina = Math.min(this.stats.maxStamina, this.stats.stamina + delta * 16);
+    if (this.stats.isSprinting && this.stats.isCrouching) {
+      this.stats.isCrouching = false;
     }
 
-    let moveSpeed = 4.8;
-    if (this.stats.isSprinting) moveSpeed = 8.2;
+    // Jump check if holding Space on landing
+    if (this.keys['Space'] && this.isGrounded) {
+      this.triggerJump();
+    }
+
+    // Step continuous stamina drain / recovery & physical exhaustion telemetry
+    const timeSinceImpulse = (performance.now() - this.lastStaminaImpulseTime) / 1000;
+    const staminaState = stepStaminaAndExhaustion({
+      currentStamina: this.stats.stamina,
+      maxStamina: this.stats.maxStamina,
+      delta,
+      isSprinting: this.stats.isSprinting,
+      isCrouching: this.stats.isCrouching,
+      isGrounded: this.isGrounded,
+      isMeleeing: Boolean(this.stats.isMeleeing),
+      timeSinceLastImpulse: timeSinceImpulse,
+      lastImpulseType: this.lastStaminaImpulseType,
+    });
+
+    this.stats.stamina = staminaState.stamina;
+    this.stats.exhaustionLevel = staminaState.exhaustionLevel;
+    this.stats.exhaustionLabel = staminaState.exhaustionLabel;
+    this.stats.heartRateBpm = staminaState.heartRateBpm;
+    this.stats.staminaAction = staminaState.staminaAction;
+    this.stats.staminaActionLabel = staminaState.staminaActionLabel;
+    this.stats.staminaDeltaRate = staminaState.staminaDeltaRate;
+
+    let moveSpeed = 4.8 * staminaState.moveSpeedMultiplier;
+    if (this.stats.isSprinting) moveSpeed = 8.2 * staminaState.moveSpeedMultiplier;
     if (this.stats.isAiming) moveSpeed = 2.4;
     if (this.stats.isCrouching) moveSpeed = 2.2;
 
@@ -510,12 +731,6 @@ export class FPSController {
       this.velocity.z = THREE.MathUtils.damp(this.velocity.z, 0, 14, delta);
     }
 
-    // Jump
-    if ((this.keys['Space']) && this.isGrounded) {
-      this.velocity.y = 5.8;
-      this.isGrounded = false;
-    }
-
     // Gravity
     this.velocity.y -= 18.0 * delta;
 
@@ -535,6 +750,16 @@ export class FPSController {
     // World play area boundary clamp
     this.position.x = Math.max(-55, Math.min(55, this.position.x));
     this.position.z = Math.max(-55, Math.min(55, this.position.z));
+    this.stats.posX = Number(this.position.x.toFixed(2));
+    this.stats.posZ = Number(this.position.z.toFixed(2));
+
+    // Continuous keyboard yaw rotation support ([ / ] keys)
+    if (this.keys['BracketLeft']) {
+      this.yaw += 1.65 * delta;
+    }
+    if (this.keys['BracketRight']) {
+      this.yaw -= 1.65 * delta;
+    }
 
     // 3b. Dynamic Crosshair Spread & Recoil Bloom update
     this.recoilBloom = decayRecoilBloom(this.recoilBloom, delta, this.stats.isCrouching);
@@ -632,22 +857,22 @@ export class FPSController {
       }
     }
 
-    // Walk bobbing offset (muted when aiming or inspecting)
-    const bobMult = (this.stats.isAiming || this.isInspecting) ? 0.05 : 1.0;
+    // Walk bobbing offset (muted when aiming, inspecting, or reloading)
+    const bobMult = (this.stats.isAiming || this.isInspecting || this.stats.isReloading) ? 0.05 : 1.0;
     const bobX = isMoving ? Math.cos(this.walkBobTime) * 0.012 * bobMult : 0;
     const bobY = isMoving ? Math.abs(Math.sin(this.walkBobTime)) * 0.016 * bobMult : 0;
 
-    // Apply combined transform to weapon rig group
+    // Apply combined transform to weapon rig group (including 3D reload & melee kinematics)
     this.currentRig.group.position.set(
-      this.currentWeaponOffset.x + this.weaponRecoilOffset.x + this.inspectOffset.x + bobX,
-      this.currentWeaponOffset.y + this.weaponRecoilOffset.y + this.inspectOffset.y - bobY,
-      this.currentWeaponOffset.z + this.weaponRecoilOffset.z + this.inspectOffset.z
+      this.currentWeaponOffset.x + this.weaponRecoilOffset.x + this.inspectOffset.x + this.reloadOffset.x + this.meleeOffset.x + bobX,
+      this.currentWeaponOffset.y + this.weaponRecoilOffset.y + this.inspectOffset.y + this.reloadOffset.y + this.meleeOffset.y - bobY,
+      this.currentWeaponOffset.z + this.weaponRecoilOffset.z + this.inspectOffset.z + this.reloadOffset.z + this.meleeOffset.z
     );
 
     this.currentRig.group.rotation.set(
-      this.weaponRecoilRot.x + this.inspectRot.x,
-      this.weaponRecoilRot.y + this.inspectRot.y,
-      this.weaponRecoilRot.z + this.inspectRot.z
+      this.weaponRecoilRot.x + this.inspectRot.x + this.reloadRot.x + this.meleeRot.x,
+      this.weaponRecoilRot.y + this.inspectRot.y + this.reloadRot.y + this.meleeRot.y,
+      this.weaponRecoilRot.z + this.inspectRot.z + this.reloadRot.z + this.meleeRot.z
     );
   }
 

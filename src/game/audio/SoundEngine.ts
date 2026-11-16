@@ -902,67 +902,72 @@ class SoundEngine {
     osc.stop(now + 0.04);
   }
 
-  /** Tactical Reload Sequence */
-  public playReload() {
+  /** Tactical Reload Sequence (fast 2-stage closed-bolt mag swap vs 3-stage empty bolt-rack reload) */
+  public playReload(isTactical: boolean = false) {
     this.initContext();
     if (!this.ctx || !this.sfxGain || this.isMuted) return;
 
-    // Mag out
+    const magOutDelay = isTactical ? 70 : 150;
+    const magInDelay = isTactical ? 460 : 750;
+
+    // 1. Mag release & drop
     setTimeout(() => {
       if (!this.ctx || !this.sfxGain) return;
       const t = this.ctx.currentTime;
       const osc = this.ctx.createOscillator();
       osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(450, t);
-      osc.frequency.exponentialRampToValueAtTime(150, t + 0.08);
+      osc.frequency.setValueAtTime(isTactical ? 520 : 450, t);
+      osc.frequency.exponentialRampToValueAtTime(160, t + 0.07);
 
       const gain = this.ctx.createGain();
       gain.gain.setValueAtTime(0.35, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-
-      osc.connect(gain);
-      gain.connect(this.sfxGain);
-      osc.start(t);
-      osc.stop(t + 0.09);
-    }, 150);
-
-    // Mag in
-    setTimeout(() => {
-      if (!this.ctx || !this.sfxGain) return;
-      const t = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(200, t);
-      osc.frequency.exponentialRampToValueAtTime(500, t + 0.07);
-
-      const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0.4, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
 
       osc.connect(gain);
       gain.connect(this.sfxGain);
       osc.start(t);
       osc.stop(t + 0.08);
-    }, 750);
+    }, magOutDelay);
 
-    // Bolt slide rack
+    // 2. Fresh mag seated & locked
     setTimeout(() => {
       if (!this.ctx || !this.sfxGain) return;
       const t = this.ctx.currentTime;
       const osc = this.ctx.createOscillator();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(750, t);
-      osc.frequency.exponentialRampToValueAtTime(120, t + 0.1);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(220, t);
+      osc.frequency.exponentialRampToValueAtTime(isTactical ? 620 : 500, t + 0.065);
 
       const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0.45, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      gain.gain.setValueAtTime(0.42, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.065);
 
       osc.connect(gain);
       gain.connect(this.sfxGain);
       osc.start(t);
-      osc.stop(t + 0.11);
-    }, 1250);
+      osc.stop(t + 0.075);
+    }, magInDelay);
+
+    // 3. Bolt slide rack (only required on empty magazine reload when chamber is empty)
+    if (!isTactical) {
+      setTimeout(() => {
+        if (!this.ctx || !this.sfxGain) return;
+        const t = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(750, t);
+        osc.frequency.exponentialRampToValueAtTime(120, t + 0.1);
+
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.45, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+
+        osc.connect(gain);
+        gain.connect(this.sfxGain);
+        osc.start(t);
+        osc.stop(t + 0.11);
+      }, 1250);
+    }
   }
 
   /** Aim Down Sights (ADS) snap */
@@ -1513,6 +1518,79 @@ class SoundEngine {
       ringOsc.start(now);
       ringOsc.stop(now + 2.5 * clampedTinnitus + 0.45);
     }
+  }
+
+  /** Tactical CQB Buttstock Melee Swing & Blunt Impact */
+  public playMeleeSwing(hitConfirmed: boolean = false) {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    // 1. Fast air whoosh (filtered noise sweep)
+    const bufferSize = Math.floor(this.ctx.sampleRate * 0.18);
+    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      const t = i / bufferSize;
+      data[i] = (Math.random() * 2 - 1) * Math.sin(t * Math.PI);
+    }
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(320, now);
+    filter.frequency.exponentialRampToValueAtTime(980, now + 0.09);
+    filter.frequency.exponentialRampToValueAtTime(240, now + 0.18);
+    filter.Q.setValueAtTime(1.8, now);
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.45, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.sfxGain);
+    noise.start(now);
+
+    // 2. Heavy buttstock blunt thud if target struck
+    if (hitConfirmed) {
+      const thud = this.ctx.createOscillator();
+      thud.type = 'triangle';
+      thud.frequency.setValueAtTime(155, now + 0.06);
+      thud.frequency.exponentialRampToValueAtTime(38, now + 0.2);
+
+      const thudGain = this.ctx.createGain();
+      thudGain.gain.setValueAtTime(0.68, now + 0.06);
+      thudGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+
+      thud.connect(thudGain);
+      thudGain.connect(this.sfxGain);
+      thud.start(now + 0.06);
+      thud.stop(now + 0.23);
+    }
+  }
+
+  /** Operator Jump Exertion & Gear Rustle */
+  public playJumpExertion() {
+    this.initContext();
+    if (!this.ctx || !this.sfxGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(95, now);
+    osc.frequency.exponentialRampToValueAtTime(165, now + 0.09);
+    osc.frequency.exponentialRampToValueAtTime(65, now + 0.18);
+
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+    osc.start(now);
+    osc.stop(now + 0.2);
   }
 }
 

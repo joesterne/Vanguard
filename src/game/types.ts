@@ -53,6 +53,11 @@ export interface PlayerStats {
   shotsHit: number;
   timeElapsed: number;
   isReloading: boolean;
+  isTacticalReload?: boolean;
+  reloadDuration?: number;
+  reloadStageLabel?: string;
+  lastReloadType?: 'tactical' | 'empty' | null;
+  lastReloadTimestamp?: number;
   isAiming: boolean;
   isSprinting: boolean;
   isCrouching: boolean;
@@ -65,6 +70,17 @@ export interface PlayerStats {
   isGrounded?: boolean;
   accuracyPct?: number;
   stabilityLabel?: string;
+  exhaustionLevel?: 'OPTIMAL' | 'ELEVATED' | 'FATIGUED' | 'EXHAUSTED';
+  exhaustionLabel?: string;
+  heartRateBpm?: number;
+  staminaAction?: 'NONE' | 'SPRINTING' | 'JUMP_EXERTION' | 'MELEE_STRIKE' | 'RECOVERING';
+  staminaActionLabel?: string;
+  staminaDeltaRate?: number;
+  isMeleeing?: boolean;
+  meleeProgress?: number;
+  meleeStageLabel?: string;
+  posX?: number;
+  posZ?: number;
 }
 
 export interface DestructibleObject {
